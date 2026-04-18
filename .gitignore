@@ -1,0 +1,11 @@
+node_modules/
+dist/
+.env
+.env.*
+.next/
+.turbo/
+!.env.example
+*.log
+.db/
+.claude/
+claude.md

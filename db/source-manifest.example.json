@@ -1,0 +1,18 @@
+{
+  "datasetName": "IPL Hybrid Source",
+  "version": "2026-04-18",
+  "downloadedAt": "2026-04-18T00:00:00.000Z",
+  "license": "Data source specific",
+  "sources": [
+    {
+      "name": "kaggle-ipl-primary",
+      "path": "db/raw/matches.csv",
+      "sha256": "replace-with-real-checksum"
+    },
+    {
+      "name": "manual-corrections",
+      "path": "db/raw/manual_corrections.csv",
+      "sha256": "replace-with-real-checksum"
+    }
+  ]
+}
