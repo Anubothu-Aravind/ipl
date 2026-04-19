@@ -130,27 +130,28 @@ async function main() {
   const raw = await readFile(inputPath, "utf8");
   const players = rawPlayersSchema.parse(JSON.parse(raw));
 
+  let processedCount = 0;
   const seen = new Set();
   const normalized = players
     .map((player) => {
+      processedCount++;
       const rawName = normalizeName(player.name);
-      const fullName = normalizeOptionalName(player.full_name) ?? rawName;
-      const displayName = normalizeOptionalName(player.display_name) ?? fullName;
-      const splitName = splitNameParts(fullName);
-      const firstName = normalizeOptionalName(player.first_name) ?? splitName.first_name;
-      const lastName = normalizeOptionalName(player.last_name) ?? splitName.last_name;
+      const displayName = normalizeOptionalName(player.display_name) ?? rawName;
       const canonicalSource = normalizeOptionalName(player.canonical_key) ?? rawName;
+
+      if (processedCount % 100 === 0) {
+        process.stdout.write(`[PROCESS] Processed ${processedCount} players...\n`);
+      }
 
       return {
         ...player,
         name: displayName,
-        full_name: fullName,
-        first_name: firstName,
-        last_name: lastName,
+        first_name: null,
+        last_name: null,
         display_name: displayName,
         alternate_names: normalizeAlternateNames(
           player.alternate_names,
-          [rawName, fullName, displayName],
+          [rawName, displayName],
           displayName,
         ),
         country: normalizeOptionalText(player.country),
@@ -162,7 +163,9 @@ async function main() {
       };
     })
     .filter((player) => {
+      // Deduplication on canonical key
       if (seen.has(player.canonical_key)) {
+        process.stdout.write(`[FILTER] Skipping duplicate: ${player.name} (canonical_key: ${player.canonical_key})\n`);
         return false;
       }
       seen.add(player.canonical_key);
@@ -170,7 +173,7 @@ async function main() {
     });
 
   await writeFile(outputPath, JSON.stringify(normalized, null, 2));
-  process.stdout.write(`Wrote ${normalized.length} normalized players to ${outputPath}.\n`);
+  process.stdout.write(`\nWrote ${normalized.length} normalized players to ${outputPath}.\n`);
 }
 
 main().catch((error) => {

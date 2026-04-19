@@ -275,7 +275,21 @@ async function main() {
 
   const inputPath = process.argv[2] ?? "db/normalized/players.json";
   const raw = await readFile(inputPath, "utf8");
-  const players = JSON.parse(raw);
+  let players = JSON.parse(raw);
+
+  // Filter: Remove players with no team assignment
+  let removed = 0;
+  const filtered = players.filter((player) => {
+    if (!player.current_team_short_code) {
+      removed++;
+      process.stdout.write(`[FILTER] Removing ${player.name}: No Team\n`);
+      return false;
+    }
+    return true;
+  });
+
+  process.stdout.write(`\n[FILTER SUMMARY] Removed: ${removed}, Seeding: ${filtered.length} players\n\n`);
+  players = filtered;
 
   const client = new Client({ connectionString });
   await client.connect();
