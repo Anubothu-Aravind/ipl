@@ -3,6 +3,11 @@ import { z } from "zod";
 
 const rawPlayerSchema = z.object({
   name: z.string(),
+  full_name: z.string().nullable().optional(),
+  first_name: z.string().nullable().optional(),
+  last_name: z.string().nullable().optional(),
+  display_name: z.string().nullable().optional(),
+  alternate_names: z.array(z.string()).optional(),
   country: z.string().nullable().optional(),
   role: z.string().nullable().optional(),
   batting_style: z.string().nullable().optional(),
@@ -28,12 +33,22 @@ const rawPlayerSchema = z.object({
   balance_metric: z.number().optional(),
   is_active: z.boolean().optional(),
   best_bowling: z.string().nullable().optional(),
+  canonical_key: z.string().nullable().optional(),
 });
 
 const rawPlayersSchema = z.array(rawPlayerSchema);
 
 function normalizeName(name) {
   return name.trim().replace(/\s+/g, " ");
+}
+
+function normalizeOptionalName(value) {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const normalized = normalizeName(value);
+  return normalized ? normalized : null;
 }
 
 function canonicalKey(name) {
@@ -61,6 +76,48 @@ function normalizeOptionalText(value) {
   return trimmed;
 }
 
+function splitNameParts(fullName) {
+  const tokens = fullName.split(" ").filter(Boolean);
+  if (tokens.length < 2) {
+    return {
+      first_name: null,
+      last_name: null,
+    };
+  }
+
+  return {
+    first_name: tokens[0],
+    last_name: tokens[tokens.length - 1],
+  };
+}
+
+function normalizeAlternateNames(rawAliases, fallbackNames = [], displayName = null) {
+  const values = [
+    ...(Array.isArray(rawAliases) ? rawAliases : []),
+    ...fallbackNames,
+  ];
+
+  const seen = new Set();
+  const aliases = [];
+
+  for (const value of values) {
+    const normalized = normalizeOptionalName(value);
+    if (!normalized || normalized === displayName) {
+      continue;
+    }
+
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    aliases.push(normalized);
+  }
+
+  return aliases;
+}
+
 async function main() {
   const inputPath = process.argv[2] ?? "db/raw/players.json";
   const outputPath = process.argv[3] ?? "db/normalized/players.json";
@@ -71,14 +128,30 @@ async function main() {
   const seen = new Set();
   const normalized = players
     .map((player) => {
-      const name = normalizeName(player.name);
+      const rawName = normalizeName(player.name);
+      const fullName = normalizeOptionalName(player.full_name) ?? rawName;
+      const displayName = normalizeOptionalName(player.display_name) ?? fullName;
+      const splitName = splitNameParts(fullName);
+      const firstName = normalizeOptionalName(player.first_name) ?? splitName.first_name;
+      const lastName = normalizeOptionalName(player.last_name) ?? splitName.last_name;
+      const canonicalSource = normalizeOptionalName(player.canonical_key) ?? rawName;
+
       return {
         ...player,
-        name,
+        name: displayName,
+        full_name: fullName,
+        first_name: firstName,
+        last_name: lastName,
+        display_name: displayName,
+        alternate_names: normalizeAlternateNames(
+          player.alternate_names,
+          [rawName, fullName, displayName],
+          displayName,
+        ),
         country: normalizeOptionalText(player.country),
         role: normalizeOptionalText(player.role),
         current_team_short_code: normalizeOptionalText(player.current_team_short_code),
-        canonical_key: canonicalKey(name),
+        canonical_key: canonicalKey(canonicalSource),
       };
     })
     .filter((player) => {

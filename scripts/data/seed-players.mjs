@@ -17,6 +17,73 @@ const TEAM_ROWS = [
   ["Gujarat Titans", "GT"],
 ];
 
+function normalizeName(name) {
+  if (typeof name !== "string") {
+    return "";
+  }
+
+  return name.trim().replace(/\s+/g, " ");
+}
+
+function normalizeOptionalName(value) {
+  const normalized = normalizeName(value);
+  return normalized ? normalized : null;
+}
+
+function canonicalKey(name) {
+  return normalizeName(name)
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+function splitNameParts(fullName) {
+  const tokens = fullName.split(" ").filter(Boolean);
+  if (tokens.length < 2) {
+    return {
+      first_name: null,
+      last_name: null,
+    };
+  }
+
+  return {
+    first_name: tokens[0],
+    last_name: tokens[tokens.length - 1],
+  };
+}
+
+function normalizeAlternateNames(rawAliases, fallbackNames, displayName) {
+  const values = [
+    ...(Array.isArray(rawAliases) ? rawAliases : []),
+    ...fallbackNames,
+  ];
+
+  const normalizedDisplayName = normalizeOptionalName(displayName);
+  const seen = new Set();
+  const aliases = [];
+
+  for (const value of values) {
+    const normalized = normalizeOptionalName(value);
+    if (!normalized) {
+      continue;
+    }
+
+    if (normalizedDisplayName && normalized === normalizedDisplayName) {
+      continue;
+    }
+
+    const key = normalized.toLowerCase();
+    if (seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    aliases.push(normalized);
+  }
+
+  return aliases;
+}
+
 function isOverseas(country) {
   if (!country) {
     return false;
@@ -36,6 +103,11 @@ async function insertTempPlayers(client, players) {
   await client.query(`
     CREATE TEMP TABLE temp_players (
       name TEXT,
+      full_name TEXT,
+      first_name TEXT,
+      last_name TEXT,
+      display_name TEXT,
+      alternate_names JSONB,
       country TEXT,
       role TEXT,
       batting_style TEXT,
@@ -66,17 +138,35 @@ async function insertTempPlayers(client, players) {
     ) ON COMMIT DROP
   `);
 
+  const columnsPerRow = 33;
   const chunks = chunkArray(players, 250);
   for (const chunk of chunks) {
     const values = [];
     const params = [];
 
     chunk.forEach((player, index) => {
-      const offset = index * 28;
-      values.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17}, $${offset + 18}, $${offset + 19}, $${offset + 20}, $${offset + 21}, $${offset + 22}, $${offset + 23}, $${offset + 24}, $${offset + 25}, $${offset + 26}, $${offset + 27}, $${offset + 28})`);
+      const fallbackName = normalizeOptionalName(player.name) ?? "Unknown Player";
+      const fullName = normalizeOptionalName(player.full_name) ?? fallbackName;
+      const displayName = normalizeOptionalName(player.display_name) ?? fullName;
+      const splitName = splitNameParts(fullName);
+      const firstName = normalizeOptionalName(player.first_name) ?? splitName.first_name;
+      const lastName = normalizeOptionalName(player.last_name) ?? splitName.last_name;
+      const alternateNames = normalizeAlternateNames(
+        player.alternate_names,
+        [fallbackName, fullName],
+        displayName,
+      );
+      const offset = index * columnsPerRow;
+
+      values.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17}, $${offset + 18}, $${offset + 19}, $${offset + 20}, $${offset + 21}, $${offset + 22}, $${offset + 23}, $${offset + 24}, $${offset + 25}, $${offset + 26}, $${offset + 27}, $${offset + 28}, $${offset + 29}, $${offset + 30}, $${offset + 31}, $${offset + 32}, $${offset + 33})`);
 
       params.push(
-        player.name,
+        displayName,
+        fullName,
+        firstName,
+        lastName,
+        displayName,
+        JSON.stringify(alternateNames),
         player.country ?? null,
         player.role ?? null,
         player.batting_style ?? null,
@@ -84,7 +174,7 @@ async function insertTempPlayers(client, players) {
         player.current_team_short_code ?? null,
         player.is_active ?? false,
         isOverseas(player.country ?? null),
-        player.canonical_key,
+        normalizeOptionalName(player.canonical_key) ?? canonicalKey(fallbackName),
         player.matches ?? 0,
         player.innings ?? 0,
         player.runs ?? 0,
@@ -111,6 +201,11 @@ async function insertTempPlayers(client, players) {
       `
       INSERT INTO temp_players (
         name,
+        full_name,
+        first_name,
+        last_name,
+        display_name,
+        alternate_names,
         country,
         role,
         batting_style,
@@ -223,6 +318,11 @@ async function main() {
       `
       INSERT INTO players (
         name,
+        full_name,
+        first_name,
+        last_name,
+        display_name,
+        alternate_names,
         country,
         role,
         current_team_id,
@@ -231,7 +331,12 @@ async function main() {
         canonical_key
       )
       SELECT
-        tp.name,
+        tp.display_name,
+        tp.full_name,
+        tp.first_name,
+        tp.last_name,
+        tp.display_name,
+        COALESCE(tp.alternate_names, '[]'::jsonb),
         NULLIF(btrim(tp.country), ''),
         tp.role,
         t.id,
@@ -243,6 +348,11 @@ async function main() {
       ON CONFLICT (canonical_key)
       DO UPDATE SET
         name = EXCLUDED.name,
+        full_name = EXCLUDED.full_name,
+        first_name = EXCLUDED.first_name,
+        last_name = EXCLUDED.last_name,
+        display_name = EXCLUDED.display_name,
+        alternate_names = EXCLUDED.alternate_names,
         country = EXCLUDED.country,
         role = EXCLUDED.role,
         current_team_id = EXCLUDED.current_team_id,

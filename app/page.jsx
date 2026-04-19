@@ -38,29 +38,88 @@ function getSearchParamValue(searchParams, key) {
   return value;
 }
 
+let supportsNormalizedNameColumnsPromise;
+
+async function supportsNormalizedNameColumns() {
+  if (!supportsNormalizedNameColumnsPromise) {
+    supportsNormalizedNameColumnsPromise = (async () => {
+      const result = await query(
+        `
+        SELECT COUNT(*)::int AS count
+        FROM information_schema.columns
+        WHERE table_schema = 'public'
+          AND table_name = 'players'
+          AND column_name IN ('display_name', 'full_name', 'first_name', 'last_name', 'alternate_names')
+        `,
+      );
+
+      return (result.rows[0]?.count ?? 0) === 5;
+    })();
+  }
+
+  return supportsNormalizedNameColumnsPromise;
+}
+
 async function getPlayers(searchParams = {}) {
+  const hasNormalizedColumns = await supportsNormalizedNameColumns();
+  const nameExpr = hasNormalizedColumns ? "p.display_name" : "p.name";
+  const fullNameExpr = hasNormalizedColumns ? "p.full_name" : "p.name";
+  const firstNameExpr = hasNormalizedColumns ? "p.first_name" : "NULL::text";
+  const lastNameExpr = hasNormalizedColumns ? "p.last_name" : "NULL::text";
+  const alternateNamesExpr = hasNormalizedColumns ? "p.alternate_names" : "'[]'::jsonb";
   const cursor = decodeCursor(getSearchParamValue(searchParams, "cursor"));
   const direction = getSearchParamValue(searchParams, "direction") === "backward" ? "backward" : "forward";
+  const rawQuery = getSearchParamValue(searchParams, "q");
+  const searchQuery = typeof rawQuery === "string" ? rawQuery.trim() : "";
   const hasCursor = Boolean(cursor);
   const effectiveDirection = hasCursor && direction === "backward" ? "backward" : "forward";
   const params = [];
-  const whereClause = hasCursor
-    ? effectiveDirection === "backward"
-      ? "WHERE (p.name, p.id) < ($1, $2)"
-      : "WHERE (p.name, p.id) > ($1, $2)"
-    : "";
-  const orderClause = effectiveDirection === "backward" ? "ORDER BY p.name DESC, p.id DESC" : "ORDER BY p.name ASC, p.id ASC";
+  const whereClauses = [];
+  const orderClause = effectiveDirection === "backward"
+    ? `ORDER BY ${nameExpr} DESC, p.id DESC`
+    : `ORDER BY ${nameExpr} ASC, p.id ASC`;
+
+  if (searchQuery) {
+    params.push(`%${searchQuery}%`);
+    const searchParam = params.length;
+    if (hasNormalizedColumns) {
+      whereClauses.push(`(
+        p.full_name ILIKE $${searchParam}
+        OR p.display_name ILIKE $${searchParam}
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements_text(p.alternate_names) AS alt(name)
+          WHERE alt.name ILIKE $${searchParam}
+        )
+      )`);
+    } else {
+      whereClauses.push(`p.name ILIKE $${searchParam}`);
+    }
+  }
 
   if (hasCursor) {
     params.push(cursor.name, Number(cursor.id));
+    const cursorNameParam = params.length - 1;
+    const cursorIdParam = params.length;
+    whereClauses.push(
+      effectiveDirection === "backward"
+        ? `(${nameExpr}, p.id) < ($${cursorNameParam}, $${cursorIdParam})`
+        : `(${nameExpr}, p.id) > ($${cursorNameParam}, $${cursorIdParam})`
+    );
   }
+
+  const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
   params.push(PAGE_SIZE + 1);
 
   const sql = `
     SELECT
       p.id,
-      p.name,
+      ${nameExpr} AS name,
+      ${fullNameExpr} AS full_name,
+      ${firstNameExpr} AS first_name,
+      ${lastNameExpr} AS last_name,
+      ${alternateNamesExpr} AS alternate_names,
       CASE
         WHEN p.country IS NULL THEN NULL
         WHEN btrim(p.country) = '' THEN NULL
@@ -110,16 +169,46 @@ async function getPlayers(searchParams = {}) {
       nextCursor: players.length > 0 ? encodeCursor(players[players.length - 1]) : null,
       direction: effectiveDirection,
       pageSize: PAGE_SIZE,
+      searchQuery,
     },
   };
 }
 
-async function getPlayerCount() {
-  const result = await query("SELECT COUNT(*)::int AS total FROM players");
+async function getPlayerCount(searchParams = {}) {
+  const hasNormalizedColumns = await supportsNormalizedNameColumns();
+  const rawQuery = getSearchParamValue(searchParams, "q");
+  const searchQuery = typeof rawQuery === "string" ? rawQuery.trim() : "";
+
+  if (!searchQuery) {
+    const result = await query("SELECT COUNT(*)::int AS total FROM players");
+    return result.rows[0]?.total ?? 0;
+  }
+
+  const result = await query(
+    hasNormalizedColumns
+      ? `
+        SELECT COUNT(*)::int AS total
+        FROM players p
+        WHERE p.full_name ILIKE $1
+           OR p.display_name ILIKE $1
+           OR EXISTS (
+             SELECT 1
+             FROM jsonb_array_elements_text(p.alternate_names) AS alt(name)
+             WHERE alt.name ILIKE $1
+           )
+        `
+      : `
+        SELECT COUNT(*)::int AS total
+        FROM players p
+        WHERE p.name ILIKE $1
+        `,
+    [`%${searchQuery}%`],
+  );
+
   return result.rows[0]?.total ?? 0;
 }
 
-function buildPageHref(cursor, direction) {
+function buildPageHref(cursor, direction, searchQuery) {
   if (!cursor) {
     return null;
   }
@@ -127,6 +216,9 @@ function buildPageHref(cursor, direction) {
   const params = new URLSearchParams();
   params.set("cursor", cursor);
   params.set("direction", direction);
+  if (searchQuery) {
+    params.set("q", searchQuery);
+  }
   return `?${params.toString()}`;
 }
 
@@ -134,7 +226,7 @@ export default async function HomePage({ searchParams }) {
   const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
   const [{ players, pagination }, totalPlayers] = await Promise.all([
     getPlayers(resolvedSearchParams),
-    getPlayerCount(),
+    getPlayerCount(resolvedSearchParams),
   ]);
 
   const countryCount = new Set(
@@ -147,8 +239,12 @@ export default async function HomePage({ searchParams }) {
     ...pagination,
     totalPlayers,
     totalCountries: countryCount,
-    previousHref: pagination.hasPreviousPage ? buildPageHref(pagination.previousCursor, "backward") : null,
-    nextHref: pagination.hasNextPage ? buildPageHref(pagination.nextCursor, "forward") : null,
+    previousHref: pagination.hasPreviousPage
+      ? buildPageHref(pagination.previousCursor, "backward", pagination.searchQuery)
+      : null,
+    nextHref: pagination.hasNextPage
+      ? buildPageHref(pagination.nextCursor, "forward", pagination.searchQuery)
+      : null,
   };
 
   return (
