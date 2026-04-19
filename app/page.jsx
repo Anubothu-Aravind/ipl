@@ -71,8 +71,7 @@ async function getSeasonOptions() {
     .filter((season) => Number.isInteger(season));
 }
 
-async function getPlayers(searchParams = {}) {
-  const selectedSeason = parseSeasonParam(searchParams);
+async function getPlayers(searchParams = {}, selectedSeason = parseSeasonParam(searchParams)) {
   const nameExpr = "p.name";
   const fullNameExpr = "p.name";
   const firstNameExpr = "NULL::text";
@@ -238,10 +237,9 @@ async function getPlayers(searchParams = {}) {
   };
 }
 
-async function getPlayerCount(searchParams = {}) {
+async function getPlayerCount(searchParams = {}, selectedSeason = parseSeasonParam(searchParams)) {
   const rawQuery = getSearchParamValue(searchParams, "q");
   const searchQuery = typeof rawQuery === "string" ? rawQuery.trim() : "";
-  const selectedSeason = parseSeasonParam(searchParams);
   const params = [];
   const whereClauses = [];
   let seasonJoin = "";
@@ -276,10 +274,9 @@ async function getPlayerCount(searchParams = {}) {
   return result.rows[0]?.total ?? 0;
 }
 
-async function getRoleSnapshot(searchParams = {}) {
+async function getRoleSnapshot(searchParams = {}, selectedSeason = parseSeasonParam(searchParams)) {
   const rawQuery = getSearchParamValue(searchParams, "q");
   const searchQuery = typeof rawQuery === "string" ? rawQuery.trim() : "";
-  const selectedSeason = parseSeasonParam(searchParams);
   const params = [];
   const whereClauses = [];
 
@@ -510,12 +507,21 @@ function buildPageHref(cursor, direction, searchQuery, selectedSeason) {
 
 export default async function HomePage({ searchParams }) {
   const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
-  const selectedSeason = parseSeasonParam(resolvedSearchParams);
-  const [{ players, pagination }, totalPlayers, seasonOptions, roleSummary] = await Promise.all([
-    getPlayers(resolvedSearchParams),
-    getPlayerCount(resolvedSearchParams),
-    getSeasonOptions(),
-    getRoleSnapshot(resolvedSearchParams),
+  const requestedSeason = parseSeasonParam(resolvedSearchParams);
+  const seasonOptions = await getSeasonOptions();
+  const selectedSeason =
+    requestedSeason !== null && seasonOptions.includes(requestedSeason)
+      ? requestedSeason
+      : null;
+  const seasonWarning =
+    requestedSeason !== null && selectedSeason === null
+      ? `Season ${requestedSeason} is unavailable in the current dataset.`
+      : null;
+
+  const [{ players, pagination }, totalPlayers, roleSummary] = await Promise.all([
+    getPlayers(resolvedSearchParams, selectedSeason),
+    getPlayerCount(resolvedSearchParams, selectedSeason),
+    getRoleSnapshot(resolvedSearchParams, selectedSeason),
   ]);
 
   const countryCount = new Set(
@@ -546,6 +552,9 @@ export default async function HomePage({ searchParams }) {
         <p className="mt-3 max-w-3xl text-sm text-slate-300 md:text-base">
           Live from your Neon database: player profile, team mapping, and role-aware career performance snapshots.
         </p>
+        {seasonWarning ? (
+          <p className="mt-2 text-sm font-semibold text-amber-300">{seasonWarning}</p>
+        ) : null}
         <div className="mt-5 flex flex-wrap gap-3 text-sm font-semibold">
           <div className="inline-flex items-center rounded-full border border-mint/50 bg-mint/15 px-4 py-1 text-mint">
             {players.length} players on this page

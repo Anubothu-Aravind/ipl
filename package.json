@@ -16,6 +16,7 @@
     "data:enrich-countries": "node scripts/data/enrich-player-countries.mjs",
     "data:seed-players": "node scripts/data/seed-players.mjs",
     "data:seed-intelligence": "node scripts/data/seed-intelligence.mjs",
+    "data:refresh-stats": "npm run data:fetch-ipl-players && npm run data:normalize-players && npm run data:enrich-countries && npm run data:seed-players && npm run data:seed-intelligence",
     "data:prepare": "npm run data:fetch-ipl-players && npm run data:normalize-players && npm run data:enrich-countries && npm run data:seed-players && npm run data:seed-intelligence",
     "db:setup": "npm run db:migrate && npm run data:prepare"
   },
