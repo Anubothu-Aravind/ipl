@@ -56,12 +56,12 @@ function formatMilestone(value) {
   return Number.isFinite(num) ? String(Math.trunc(num)) : "0";
 }
 
-function getPerformanceScore(player, role) {
-  const runs = toNumber(player.runs);
-  const wickets = toNumber(player.wickets);
+function getPerformanceScore(player, role, selectedSeason = null) {
+  const runs = toNumber(selectedSeason ? player.season_runs : player.runs);
+  const wickets = toNumber(selectedSeason ? player.season_wickets : player.wickets);
   const average = toNumber(player.average);
-  const strikeRate = toNumber(player.strike_rate);
-  const economy = toNumber(player.economy);
+  const strikeRate = toNumber(selectedSeason ? player.season_strike_rate : player.strike_rate);
+  const economy = toNumber(selectedSeason ? player.season_economy : player.economy);
   const dotBalls = toNumber(player.dot_balls);
 
   if (role === "Batter") {
@@ -83,18 +83,32 @@ function getPerformanceScore(player, role) {
   return runs + wickets * 12;
 }
 
-function getTopPerformers(players, role) {
+function getTopPerformers(players, role, selectedSeason = null) {
   return players
     .filter((player) => normalizeRole(player.role) === role)
     .map((player) => ({
       ...player,
-      score: getPerformanceScore(player, role),
+      score: getPerformanceScore(player, role, selectedSeason),
     }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 3);
 }
 
-function getMetricForRole(player, role) {
+function getMetricForRole(player, role, selectedSeason = null) {
+  if (selectedSeason) {
+    if (role === "Batter" || role === "Wicketkeeper") {
+      return `${formatNumber(player.season_runs, 0)} season runs | ${formatNumber(player.runs, 0)} till ${selectedSeason}`;
+    }
+
+    if (role === "Bowler") {
+      return `${formatNumber(player.season_wickets, 0)} season wkts | ${formatNumber(player.wickets, 0)} till ${selectedSeason}`;
+    }
+
+    if (role === "All-Rounder") {
+      return `${formatNumber(player.season_runs, 0)}R/${formatNumber(player.season_wickets, 0)}W season | ${formatNumber(player.runs, 0)}R/${formatNumber(player.wickets, 0)}W till ${selectedSeason}`;
+    }
+  }
+
   if (role === "Batter") {
     return `${formatNumber(player.runs, 0)} runs`;
   }
@@ -114,7 +128,7 @@ function getMetricForRole(player, role) {
   return "-";
 }
 
-function getRoleSummary(players) {
+function getRoleSummary(players, selectedSeason = null) {
   const grouped = {
     Batter: 0,
     Bowler: 0,
@@ -132,10 +146,10 @@ function getRoleSummary(players) {
   return {
     grouped,
     topPerformers: {
-      Batter: getTopPerformers(players, "Batter"),
-      Bowler: getTopPerformers(players, "Bowler"),
-      "All-Rounder": getTopPerformers(players, "All-Rounder"),
-      Wicketkeeper: getTopPerformers(players, "Wicketkeeper"),
+      Batter: getTopPerformers(players, "Batter", selectedSeason),
+      Bowler: getTopPerformers(players, "Bowler", selectedSeason),
+      "All-Rounder": getTopPerformers(players, "All-Rounder", selectedSeason),
+      Wicketkeeper: getTopPerformers(players, "Wicketkeeper", selectedSeason),
     },
   };
 }
@@ -184,7 +198,7 @@ function formatBestBowling(bestBowling) {
 }
 
 export default function PlayersTable({ players, pagination, seasonOptions = [], selectedSeason = null }) {
-  const roleSummary = getRoleSummary(players);
+  const roleSummary = getRoleSummary(players, selectedSeason);
   const clearSeasonHref = pagination.searchQuery
     ? `?q=${encodeURIComponent(pagination.searchQuery)}`
     : "/";
@@ -262,11 +276,16 @@ export default function PlayersTable({ players, pagination, seasonOptions = [], 
           {Object.entries(roleSummary.topPerformers).map(([role, topPlayers]) => (
             <article key={role} className="rounded-2xl border border-slate-700/70 bg-slate-950/60 p-3">
               <div className="flex items-center justify-between">
-                <h3 className="text-sm font-semibold text-white">Top {roleMap[role] ?? role}</h3>
+                <h3 className="text-sm font-semibold text-white">
+                  Top {roleMap[role] ?? role} {selectedSeason ? `(Season ${selectedSeason} form)` : ""}
+                </h3>
                 <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getRoleBadgeClass(role)}`}>
                   {roleSummary.grouped[role] ?? 0}
                 </span>
               </div>
+              {selectedSeason ? (
+                <p className="mt-1 text-[11px] text-slate-400">Shows season form first, then cumulative till {selectedSeason}</p>
+              ) : null}
               <ul className="mt-3 space-y-2">
                 {topPlayers.length === 0 && <li className="text-xs text-slate-500">No players in this role</li>}
                 {topPlayers.map((player) => (
@@ -280,7 +299,7 @@ export default function PlayersTable({ players, pagination, seasonOptions = [], 
                         <p className="truncate text-[11px] text-slate-400">{player.current_team ?? "No Team"}</p>
                       </div>
                     </div>
-                    <span className="text-[11px] font-semibold text-sky-200">{getMetricForRole(player, role)}</span>
+                    <span className="text-[11px] font-semibold text-sky-200">{getMetricForRole(player, role, selectedSeason)}</span>
                   </li>
                 ))}
               </ul>
@@ -312,14 +331,18 @@ export default function PlayersTable({ players, pagination, seasonOptions = [], 
               )}
 
               {players.map((player) => {
-                const battingLine = `${formatNumber(player.runs, 0)} runs | Avg ${formatNumber(player.average, 2)} | SR ${formatNumber(
-                  player.strike_rate,
-                  2
-                )}`;
+                const battingLine = selectedSeason
+                  ? `Till ${selectedSeason}: ${formatNumber(player.runs, 0)} runs | SR ${formatNumber(player.strike_rate, 2)}`
+                  : `${formatNumber(player.runs, 0)} runs | Avg ${formatNumber(player.average, 2)} | SR ${formatNumber(
+                    player.strike_rate,
+                    2
+                  )}`;
                 const milestoneLine = `${formatMilestone(player.fifties)} / ${formatMilestone(player.hundreds)}`;
-                const bowlingLine = `${formatNumber(player.wickets, 0)} wkts | Econ ${formatNumber(player.economy, 2)} | BBI ${formatBestBowling(
-                  player.best_bowling
-                )}`;
+                const bowlingLine = selectedSeason
+                  ? `Till ${selectedSeason}: ${formatNumber(player.wickets, 0)} wkts | Econ ${formatNumber(player.economy, 2)}`
+                  : `${formatNumber(player.wickets, 0)} wkts | Econ ${formatNumber(player.economy, 2)} | BBI ${formatBestBowling(
+                    player.best_bowling
+                  )}`;
 
                 return (
                   <tr key={player.id} className="transition-colors hover:bg-slate-800/40">

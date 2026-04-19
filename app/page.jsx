@@ -72,12 +72,15 @@ async function getSeasonOptions() {
 }
 
 async function getPlayers(searchParams = {}) {
+  const selectedSeason = parseSeasonParam(searchParams);
   const nameExpr = "p.name";
   const fullNameExpr = "p.name";
   const firstNameExpr = "NULL::text";
   const lastNameExpr = "NULL::text";
   const alternateNamesExpr = "'[]'::jsonb";
-  const selectedSeason = parseSeasonParam(searchParams);
+  const currentTeamExpr = selectedSeason !== null
+    ? "COALESCE(t_season.short_code, t.short_code)"
+    : "t.short_code";
   const cursor = decodeCursor(getSearchParamValue(searchParams, "cursor"));
   const direction = getSearchParamValue(searchParams, "direction") === "backward" ? "backward" : "forward";
   const rawQuery = getSearchParamValue(searchParams, "q");
@@ -173,7 +176,7 @@ async function getPlayers(searchParams = {}) {
       END AS country,
       p.role,
       p.is_active,
-      t.short_code AS current_team,
+      ${currentTeamExpr} AS current_team,
       COALESCE(s.matches, 0)::int AS matches,
       ${selectedSeason !== null ? "COALESCE(s.matches, 0)::int" : "COALESCE(s.innings, 0)::int"} AS innings,
       COALESCE(s.runs, 0)::int AS runs,
@@ -209,6 +212,7 @@ async function getPlayers(searchParams = {}) {
     FROM players p
     LEFT JOIN teams t ON t.id = p.current_team_id
     ${statsJoinClause}
+    LEFT JOIN teams t_season ON t_season.id = ps_selected.team_id
     ${whereClause}
     ${orderClause}
     LIMIT $${params.length}
