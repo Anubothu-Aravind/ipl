@@ -197,8 +197,8 @@ function formatBestBowling(bestBowling) {
   return bestBowling;
 }
 
-export default function PlayersTable({ players, pagination, seasonOptions = [], selectedSeason = null }) {
-  const roleSummary = getRoleSummary(players, selectedSeason);
+export default function PlayersTable({ players, pagination, seasonOptions = [], selectedSeason = null, roleSummary = null }) {
+  const effectiveRoleSummary = roleSummary ?? getRoleSummary(players, selectedSeason);
   const clearSeasonHref = pagination.searchQuery
     ? `?q=${encodeURIComponent(pagination.searchQuery)}`
     : "/";
@@ -261,7 +261,7 @@ export default function PlayersTable({ players, pagination, seasonOptions = [], 
             </h2>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            {Object.entries(roleSummary.grouped).map(([role, count]) => (
+            {Object.entries(effectiveRoleSummary.grouped).map(([role, count]) => (
               <span
                 key={role}
                 className={`inline-flex items-center rounded-full border px-3 py-1 font-semibold ${getRoleBadgeClass(role)}`}
@@ -273,14 +273,14 @@ export default function PlayersTable({ players, pagination, seasonOptions = [], 
         </div>
 
         <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-          {Object.entries(roleSummary.topPerformers).map(([role, topPlayers]) => (
+          {Object.entries(effectiveRoleSummary.topPerformers).map(([role, topPlayers]) => (
             <article key={role} className="rounded-2xl border border-slate-700/70 bg-slate-950/60 p-3">
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-white">
                   Top {roleMap[role] ?? role} {selectedSeason ? `(Season ${selectedSeason} form)` : ""}
                 </h3>
-                <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getRoleBadgeClass(role)}`}>
-                  {roleSummary.grouped[role] ?? 0}
+                  <span className={`rounded-full border px-2 py-0.5 text-[11px] font-semibold ${getRoleBadgeClass(role)}`}>
+                    {effectiveRoleSummary.grouped[role] ?? 0}
                 </span>
               </div>
               {selectedSeason ? (

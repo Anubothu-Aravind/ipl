@@ -276,6 +276,221 @@ async function getPlayerCount(searchParams = {}) {
   return result.rows[0]?.total ?? 0;
 }
 
+async function getRoleSnapshot(searchParams = {}) {
+  const rawQuery = getSearchParamValue(searchParams, "q");
+  const searchQuery = typeof rawQuery === "string" ? rawQuery.trim() : "";
+  const selectedSeason = parseSeasonParam(searchParams);
+  const params = [];
+  const whereClauses = [];
+
+  if (searchQuery) {
+    params.push(`%${searchQuery}%`);
+    whereClauses.push(`p.name ILIKE $${params.length}`);
+  }
+
+  const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
+  const normalizedRoleExpr = `
+    CASE
+      WHEN p.role IS NULL OR btrim(p.role) = '' THEN 'Unknown'
+      WHEN POSITION('all' IN lower(p.role)) > 0 THEN 'All-Rounder'
+      WHEN POSITION('wicket' IN lower(p.role)) > 0 THEN 'Wicketkeeper'
+      WHEN POSITION('bowl' IN lower(p.role)) > 0 THEN 'Bowler'
+      WHEN POSITION('bat' IN lower(p.role)) > 0 THEN 'Batter'
+      ELSE p.role
+    END
+  `;
+
+  let sql;
+
+  if (selectedSeason !== null) {
+    params.unshift(selectedSeason);
+
+    sql = `
+      WITH pool AS (
+        SELECT
+          p.id,
+          p.name,
+          ${normalizedRoleExpr} AS normalized_role,
+          COALESCE(t_season.short_code, t.short_code) AS current_team,
+          COALESCE(s.runs, 0)::int AS runs,
+          COALESCE(s.wickets, 0)::int AS wickets,
+          COALESCE(s.strike_rate, 0)::numeric AS strike_rate,
+          COALESCE(s.economy, 0)::numeric AS economy,
+          COALESCE(ps_selected.runs, 0)::int AS season_runs,
+          COALESCE(ps_selected.wickets, 0)::int AS season_wickets,
+          COALESCE(ps_selected.strike_rate, 0)::numeric AS season_strike_rate,
+          COALESCE(ps_selected.economy, 0)::numeric AS season_economy
+        FROM players p
+        JOIN player_season_stats ps_selected
+          ON ps_selected.player_id = p.id
+         AND ps_selected.season = $1
+        LEFT JOIN LATERAL (
+          SELECT
+            COALESCE(SUM(ps.runs), 0)::int AS runs,
+            COALESCE(SUM(ps.wickets), 0)::int AS wickets,
+            CASE
+              WHEN SUM(CASE WHEN ps.strike_rate > 0 THEN ps.matches ELSE 0 END) > 0
+                THEN ROUND(
+                  SUM(CASE WHEN ps.strike_rate > 0 THEN ps.matches * ps.strike_rate ELSE 0 END)::numeric /
+                  SUM(CASE WHEN ps.strike_rate > 0 THEN ps.matches ELSE 0 END),
+                  2
+                )
+              ELSE 0
+            END AS strike_rate,
+            CASE
+              WHEN SUM(CASE WHEN ps.economy > 0 THEN ps.matches ELSE 0 END) > 0
+                THEN ROUND(
+                  SUM(CASE WHEN ps.economy > 0 THEN ps.matches * ps.economy ELSE 0 END)::numeric /
+                  SUM(CASE WHEN ps.economy > 0 THEN ps.matches ELSE 0 END),
+                  2
+                )
+              ELSE 0
+            END AS economy
+          FROM player_season_stats ps
+          WHERE ps.player_id = p.id
+            AND ps.season <= $1
+        ) s ON TRUE
+        LEFT JOIN teams t ON t.id = p.current_team_id
+        LEFT JOIN teams t_season ON t_season.id = ps_selected.team_id
+        ${whereClause}
+      ),
+      scored AS (
+        SELECT
+          *,
+          CASE
+            WHEN normalized_role = 'Batter' THEN COALESCE(season_runs, 0) + COALESCE(season_strike_rate, 0) * 2
+            WHEN normalized_role = 'Bowler' THEN COALESCE(season_wickets, 0) * 24 - COALESCE(season_economy, 0) * 9
+            WHEN normalized_role = 'All-Rounder' THEN COALESCE(season_runs, 0) * 0.55 + COALESCE(season_wickets, 0) * 22 + COALESCE(season_strike_rate, 0) * 0.7
+            WHEN normalized_role = 'Wicketkeeper' THEN COALESCE(season_runs, 0) * 0.75 + COALESCE(season_strike_rate, 0) * 1.4
+            ELSE COALESCE(season_runs, 0) + COALESCE(season_wickets, 0) * 12
+          END AS score
+        FROM pool
+      ),
+      ranked AS (
+        SELECT
+          *,
+          COUNT(*) OVER (PARTITION BY normalized_role)::int AS role_count,
+          ROW_NUMBER() OVER (
+            PARTITION BY normalized_role
+            ORDER BY score DESC, season_runs DESC, season_wickets DESC, name ASC, id ASC
+          ) AS role_rank
+        FROM scored
+      )
+      SELECT
+        id,
+        name,
+        normalized_role,
+        current_team,
+        runs,
+        wickets,
+        strike_rate,
+        economy,
+        season_runs,
+        season_wickets,
+        season_strike_rate,
+        season_economy,
+        role_count
+      FROM ranked
+      WHERE role_rank <= 3
+      ORDER BY normalized_role ASC, role_rank ASC
+    `;
+  } else {
+    sql = `
+      WITH pool AS (
+        SELECT
+          p.id,
+          p.name,
+          ${normalizedRoleExpr} AS normalized_role,
+          t.short_code AS current_team,
+          COALESCE(s.runs, 0)::int AS runs,
+          COALESCE(s.wickets, 0)::int AS wickets,
+          COALESCE(s.average, 0)::numeric AS average,
+          COALESCE(s.strike_rate, 0)::numeric AS strike_rate,
+          COALESCE(s.economy, 0)::numeric AS economy,
+          COALESCE(s.dot_balls, 0)::int AS dot_balls,
+          NULL::int AS season_runs,
+          NULL::int AS season_wickets,
+          NULL::numeric AS season_strike_rate,
+          NULL::numeric AS season_economy
+        FROM players p
+        LEFT JOIN player_stats s ON s.player_id = p.id
+        LEFT JOIN teams t ON t.id = p.current_team_id
+        ${whereClause}
+      ),
+      scored AS (
+        SELECT
+          *,
+          CASE
+            WHEN normalized_role = 'Batter' THEN COALESCE(runs, 0) + COALESCE(strike_rate, 0) * 2 + COALESCE(average, 0) * 4
+            WHEN normalized_role = 'Bowler' THEN COALESCE(wickets, 0) * 24 + COALESCE(dot_balls, 0) * 0.35 - COALESCE(economy, 0) * 9
+            WHEN normalized_role = 'All-Rounder' THEN COALESCE(runs, 0) * 0.55 + COALESCE(wickets, 0) * 22 + COALESCE(average, 0) * 2 + COALESCE(strike_rate, 0) * 0.7
+            WHEN normalized_role = 'Wicketkeeper' THEN COALESCE(runs, 0) * 0.75 + COALESCE(strike_rate, 0) * 1.4 + COALESCE(average, 0) * 2
+            ELSE COALESCE(runs, 0) + COALESCE(wickets, 0) * 12
+          END AS score
+        FROM pool
+      ),
+      ranked AS (
+        SELECT
+          *,
+          COUNT(*) OVER (PARTITION BY normalized_role)::int AS role_count,
+          ROW_NUMBER() OVER (
+            PARTITION BY normalized_role
+            ORDER BY score DESC, runs DESC, wickets DESC, name ASC, id ASC
+          ) AS role_rank
+        FROM scored
+      )
+      SELECT
+        id,
+        name,
+        normalized_role,
+        current_team,
+        runs,
+        wickets,
+        strike_rate,
+        economy,
+        season_runs,
+        season_wickets,
+        season_strike_rate,
+        season_economy,
+        role_count
+      FROM ranked
+      WHERE role_rank <= 3
+      ORDER BY normalized_role ASC, role_rank ASC
+    `;
+  }
+
+  const result = await query(sql, params);
+  const grouped = {
+    Batter: 0,
+    Bowler: 0,
+    "All-Rounder": 0,
+    Wicketkeeper: 0,
+  };
+
+  const topPerformers = {
+    Batter: [],
+    Bowler: [],
+    "All-Rounder": [],
+    Wicketkeeper: [],
+  };
+
+  for (const row of result.rows) {
+    const role = row.normalized_role;
+
+    if (!Object.prototype.hasOwnProperty.call(topPerformers, role)) {
+      continue;
+    }
+
+    if (grouped[role] === 0) {
+      grouped[role] = Number(row.role_count) || 0;
+    }
+
+    topPerformers[role].push(row);
+  }
+
+  return { grouped, topPerformers };
+}
+
 function buildPageHref(cursor, direction, searchQuery, selectedSeason) {
   if (!cursor) {
     return null;
@@ -296,10 +511,11 @@ function buildPageHref(cursor, direction, searchQuery, selectedSeason) {
 export default async function HomePage({ searchParams }) {
   const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
   const selectedSeason = parseSeasonParam(resolvedSearchParams);
-  const [{ players, pagination }, totalPlayers, seasonOptions] = await Promise.all([
+  const [{ players, pagination }, totalPlayers, seasonOptions, roleSummary] = await Promise.all([
     getPlayers(resolvedSearchParams),
     getPlayerCount(resolvedSearchParams),
     getSeasonOptions(),
+    getRoleSnapshot(resolvedSearchParams),
   ]);
 
   const countryCount = new Set(
@@ -351,6 +567,7 @@ export default async function HomePage({ searchParams }) {
         pagination={paginationProps}
         seasonOptions={seasonOptions}
         selectedSeason={selectedSeason}
+        roleSummary={roleSummary}
       />
     </main>
   );
