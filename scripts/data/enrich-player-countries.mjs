@@ -16,6 +16,7 @@ const PLACEHOLDER_COUNTRIES = new Set([
   "n/a",
   "null",
   "unknown",
+  "unknown country",
   "bcci",
   "board of control for cricket in india",
 ]);
@@ -75,6 +76,19 @@ function normalizeCountry(value) {
   }
 
   return trimmed;
+}
+
+function toCountryBucket(value) {
+  const normalized = normalizeCountry(value);
+  if (!normalized) {
+    return null;
+  }
+
+  if (normalized.toLowerCase() === "india") {
+    return "Indian";
+  }
+
+  return "Overseas Player";
 }
 
 function isInitialToken(token) {
@@ -668,8 +682,10 @@ async function main() {
   let enrichedFromCricinfo = 0;
   let enrichedFromCricbuzz = 0;
   let preservedExisting = 0;
-  let defaultedIndia = 0;
   let noIdentifier = 0;
+  let unresolvedCountry = 0;
+  let indianBucket = 0;
+  let overseasBucket = 0;
   let canonicalizedFullNames = 0;
   let playersWithAliases = 0;
 
@@ -679,14 +695,9 @@ async function main() {
       ? profileCache[cacheKey("cricinfo", context.cricinfoId)] ?? null
       : null;
     const existingName = normalizeName(player.name);
-    const fullName = pickBestFullName({
-      existingName,
-      existingFullName: player.full_name,
-      registerName: espnNameProfile?.fullName ?? espnNameProfile?.displayName ?? context.registerNames?.name,
-      registerUniqueName: espnNameProfile?.shortName ?? context.registerNames?.uniqueName,
-    });
-    const displayName = fullName;
-    const splitName = splitNameParts(fullName);
+    const displayName = normalizeOptionalName(player.display_name) ?? existingName;
+    const fullName = normalizeOptionalName(player.full_name) ?? existingName;
+    const splitName = splitNameParts(displayName);
     const firstName = normalizeOptionalName(espnNameProfile?.firstName)
       ?? normalizeOptionalName(player.first_name)
       ?? splitName.first_name;
@@ -734,7 +745,7 @@ async function main() {
       if (fromCricbuzz) {
         enrichedFromCricbuzz += 1;
         resolvedCountry = fromCricbuzz;
-      } else if (context.existingCountry && context.existingCountry.toLowerCase() !== "india") {
+      } else if (context.existingCountry) {
         preservedExisting += 1;
         resolvedCountry = context.existingCountry;
       } else {
@@ -742,9 +753,16 @@ async function main() {
           noIdentifier += 1;
         }
 
-        defaultedIndia += 1;
-        resolvedCountry = "India";
+        unresolvedCountry += 1;
+        resolvedCountry = null;
       }
+    }
+
+    const countryBucket = toCountryBucket(resolvedCountry);
+    if (countryBucket === "Indian") {
+      indianBucket += 1;
+    } else if (countryBucket === "Overseas Player") {
+      overseasBucket += 1;
     }
 
     return {
@@ -756,7 +774,7 @@ async function main() {
       display_name: displayName,
       alternate_names: alternateNames,
       canonical_key: canonicalKey(canonicalSource),
-      country: resolvedCountry,
+      country: countryBucket,
     };
   });
 
@@ -768,7 +786,9 @@ async function main() {
   process.stdout.write(`Cricinfo-enriched countries: ${enrichedFromCricinfo}\n`);
   process.stdout.write(`Cricbuzz-enriched countries: ${enrichedFromCricbuzz}\n`);
   process.stdout.write(`Preserved existing countries: ${preservedExisting}\n`);
-  process.stdout.write(`Defaulted to India: ${defaultedIndia}\n`);
+  process.stdout.write(`Unresolved countries (set to null): ${unresolvedCountry}\n`);
+  process.stdout.write(`Country bucket Indian: ${indianBucket}\n`);
+  process.stdout.write(`Country bucket Overseas Player: ${overseasBucket}\n`);
   process.stdout.write(`Players missing registry identifiers: ${noIdentifier}\n`);
   process.stdout.write(`Canonical full-name upgrades: ${canonicalizedFullNames}\n`);
   process.stdout.write(`Players with alternate names: ${playersWithAliases}\n`);

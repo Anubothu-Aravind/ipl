@@ -69,7 +69,15 @@ function normalizeOptionalText(value) {
   }
 
   const lowered = trimmed.toLowerCase();
-  if (lowered === "-" || lowered === "--" || lowered === "na" || lowered === "n/a" || lowered === "null") {
+  if (
+    lowered === "-" ||
+    lowered === "--" ||
+    lowered === "na" ||
+    lowered === "n/a" ||
+    lowered === "null" ||
+    lowered === "unknown" ||
+    lowered === "unknown country"
+  ) {
     return null;
   }
 

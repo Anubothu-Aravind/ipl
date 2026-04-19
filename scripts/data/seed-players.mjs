@@ -22,6 +22,17 @@ const TEAM_ROWS = [
   ["Gujarat Lions", "GL"],
 ];
 
+const COUNTRY_PLACEHOLDERS = new Set([
+  "",
+  "-",
+  "--",
+  "na",
+  "n/a",
+  "null",
+  "unknown",
+  "unknown country",
+]);
+
 function normalizeName(name) {
   if (typeof name !== "string") {
     return "";
@@ -40,6 +51,31 @@ function canonicalKey(name) {
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "");
+}
+
+function hasValidCountry(value) {
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return false;
+  }
+
+  return !COUNTRY_PLACEHOLDERS.has(trimmed.toLowerCase());
+}
+
+function toCountryBucket(value) {
+  if (!hasValidCountry(value)) {
+    return null;
+  }
+
+  if (value.trim().toLowerCase() === "india" || value.trim().toLowerCase() === "indian") {
+    return "Indian";
+  }
+
+  return "Overseas Player";
 }
 
 function splitNameParts(fullName) {
@@ -93,7 +129,8 @@ function isOverseas(country) {
   if (!country) {
     return false;
   }
-  return country.toLowerCase() !== "india";
+  const lowered = country.toLowerCase();
+  return lowered === "overseas player" || lowered === "overseas";
 }
 
 function chunkArray(items, size) {
@@ -152,8 +189,9 @@ async function insertTempPlayers(client, players) {
     chunk.forEach((player, index) => {
       const fallbackName = normalizeOptionalName(player.name) ?? "Unknown Player";
       const fullName = normalizeOptionalName(player.full_name) ?? fallbackName;
-      const displayName = normalizeOptionalName(player.display_name) ?? fullName;
-      const splitName = splitNameParts(fullName);
+      const displayName = normalizeOptionalName(player.display_name) ?? fallbackName;
+      const splitName = splitNameParts(displayName);
+      const countryBucket = toCountryBucket(player.country);
       const firstName = normalizeOptionalName(player.first_name) ?? splitName.first_name;
       const lastName = normalizeOptionalName(player.last_name) ?? splitName.last_name;
       const alternateNames = normalizeAlternateNames(
@@ -172,13 +210,13 @@ async function insertTempPlayers(client, players) {
         lastName,
         displayName,
         JSON.stringify(alternateNames),
-        player.country ?? null,
+        countryBucket,
         player.role ?? null,
         player.batting_style ?? null,
         player.bowling_style ?? null,
         player.current_team_short_code ?? null,
         player.is_active ?? false,
-        isOverseas(player.country ?? null),
+        isOverseas(countryBucket),
         normalizeOptionalName(player.canonical_key) ?? canonicalKey(fallbackName),
         player.matches ?? 0,
         player.innings ?? 0,
@@ -277,18 +315,42 @@ async function main() {
   const raw = await readFile(inputPath, "utf8");
   let players = JSON.parse(raw);
 
-  // Filter: Remove players with no team assignment
-  let removed = 0;
+  // Row-by-row normalization of country to only 2 options.
+  players = players.map((player) => {
+    const bucket = toCountryBucket(player.country);
+    if (bucket && bucket !== player.country) {
+      process.stdout.write(`[UPDATE] ${player.name}: ${player.country ?? "null"} -> ${bucket}\n`);
+    }
+
+    return {
+      ...player,
+      country: bucket,
+    };
+  });
+
+  // Filter: Remove players with unknown country or no team assignment.
+  let removedUnknownCountry = 0;
+  let removedNoTeam = 0;
   const filtered = players.filter((player) => {
+    if (!player.country) {
+      removedUnknownCountry += 1;
+      process.stdout.write(`[FILTER] Removing ${player.name}: Unknown Country\n`);
+      return false;
+    }
+
     if (!player.current_team_short_code) {
-      removed++;
+      removedNoTeam += 1;
       process.stdout.write(`[FILTER] Removing ${player.name}: No Team\n`);
       return false;
     }
+
     return true;
   });
 
-  process.stdout.write(`\n[FILTER SUMMARY] Removed: ${removed}, Seeding: ${filtered.length} players\n\n`);
+  const removedTotal = removedUnknownCountry + removedNoTeam;
+  process.stdout.write(`\n[FILTER SUMMARY] Removed Unknown Country: ${removedUnknownCountry}\n`);
+  process.stdout.write(`[FILTER SUMMARY] Removed No Team: ${removedNoTeam}\n`);
+  process.stdout.write(`[FILTER SUMMARY] Removed Total: ${removedTotal}, Seeding: ${filtered.length} players\n\n`);
   players = filtered;
 
   const client = new Client({ connectionString });
