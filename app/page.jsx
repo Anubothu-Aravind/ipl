@@ -38,35 +38,12 @@ function getSearchParamValue(searchParams, key) {
   return value;
 }
 
-let supportsNormalizedNameColumnsPromise;
-
-async function supportsNormalizedNameColumns() {
-  if (!supportsNormalizedNameColumnsPromise) {
-    supportsNormalizedNameColumnsPromise = (async () => {
-      const result = await query(
-        `
-        SELECT COUNT(*)::int AS count
-        FROM information_schema.columns
-        WHERE table_schema = 'public'
-          AND table_name = 'players'
-          AND column_name IN ('display_name', 'full_name', 'first_name', 'last_name', 'alternate_names')
-        `,
-      );
-
-      return (result.rows[0]?.count ?? 0) === 5;
-    })();
-  }
-
-  return supportsNormalizedNameColumnsPromise;
-}
-
 async function getPlayers(searchParams = {}) {
-  const hasNormalizedColumns = await supportsNormalizedNameColumns();
-  const nameExpr = hasNormalizedColumns ? "p.display_name" : "p.name";
-  const fullNameExpr = hasNormalizedColumns ? "p.full_name" : "p.name";
-  const firstNameExpr = hasNormalizedColumns ? "p.first_name" : "NULL::text";
-  const lastNameExpr = hasNormalizedColumns ? "p.last_name" : "NULL::text";
-  const alternateNamesExpr = hasNormalizedColumns ? "p.alternate_names" : "'[]'::jsonb";
+  const nameExpr = "p.name";
+  const fullNameExpr = "p.name";
+  const firstNameExpr = "NULL::text";
+  const lastNameExpr = "NULL::text";
+  const alternateNamesExpr = "'[]'::jsonb";
   const cursor = decodeCursor(getSearchParamValue(searchParams, "cursor"));
   const direction = getSearchParamValue(searchParams, "direction") === "backward" ? "backward" : "forward";
   const rawQuery = getSearchParamValue(searchParams, "q");
@@ -82,19 +59,7 @@ async function getPlayers(searchParams = {}) {
   if (searchQuery) {
     params.push(`%${searchQuery}%`);
     const searchParam = params.length;
-    if (hasNormalizedColumns) {
-      whereClauses.push(`(
-        p.full_name ILIKE $${searchParam}
-        OR p.display_name ILIKE $${searchParam}
-        OR EXISTS (
-          SELECT 1
-          FROM jsonb_array_elements_text(p.alternate_names) AS alt(name)
-          WHERE alt.name ILIKE $${searchParam}
-        )
-      )`);
-    } else {
-      whereClauses.push(`p.name ILIKE $${searchParam}`);
-    }
+    whereClauses.push(`p.name ILIKE $${searchParam}`);
   }
 
   if (hasCursor) {
@@ -175,7 +140,6 @@ async function getPlayers(searchParams = {}) {
 }
 
 async function getPlayerCount(searchParams = {}) {
-  const hasNormalizedColumns = await supportsNormalizedNameColumns();
   const rawQuery = getSearchParamValue(searchParams, "q");
   const searchQuery = typeof rawQuery === "string" ? rawQuery.trim() : "";
 
@@ -185,23 +149,11 @@ async function getPlayerCount(searchParams = {}) {
   }
 
   const result = await query(
-    hasNormalizedColumns
-      ? `
-        SELECT COUNT(*)::int AS total
-        FROM players p
-        WHERE p.full_name ILIKE $1
-           OR p.display_name ILIKE $1
-           OR EXISTS (
-             SELECT 1
-             FROM jsonb_array_elements_text(p.alternate_names) AS alt(name)
-             WHERE alt.name ILIKE $1
-           )
-        `
-      : `
-        SELECT COUNT(*)::int AS total
-        FROM players p
-        WHERE p.name ILIKE $1
-        `,
+    `
+    SELECT COUNT(*)::int AS total
+    FROM players p
+    WHERE p.name ILIKE $1
+    `,
     [`%${searchQuery}%`],
   );
 
