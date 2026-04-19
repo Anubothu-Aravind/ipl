@@ -145,11 +145,6 @@ async function insertTempPlayers(client, players) {
   await client.query(`
     CREATE TEMP TABLE temp_players (
       name TEXT,
-      full_name TEXT,
-      first_name TEXT,
-      last_name TEXT,
-      display_name TEXT,
-      alternate_names JSONB,
       country TEXT,
       role TEXT,
       batting_style TEXT,
@@ -180,7 +175,7 @@ async function insertTempPlayers(client, players) {
     ) ON COMMIT DROP
   `);
 
-  const columnsPerRow = 33;
+  const columnsPerRow = 28;
   const chunks = chunkArray(players, 250);
   for (const chunk of chunks) {
     const values = [];
@@ -188,28 +183,14 @@ async function insertTempPlayers(client, players) {
 
     chunk.forEach((player, index) => {
       const fallbackName = normalizeOptionalName(player.name) ?? "Unknown Player";
-      const fullName = normalizeOptionalName(player.full_name) ?? fallbackName;
       const displayName = normalizeOptionalName(player.display_name) ?? fallbackName;
-      const splitName = splitNameParts(displayName);
       const countryBucket = toCountryBucket(player.country);
-      const firstName = normalizeOptionalName(player.first_name) ?? splitName.first_name;
-      const lastName = normalizeOptionalName(player.last_name) ?? splitName.last_name;
-      const alternateNames = normalizeAlternateNames(
-        player.alternate_names,
-        [fallbackName, fullName],
-        displayName,
-      );
       const offset = index * columnsPerRow;
 
-      values.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17}, $${offset + 18}, $${offset + 19}, $${offset + 20}, $${offset + 21}, $${offset + 22}, $${offset + 23}, $${offset + 24}, $${offset + 25}, $${offset + 26}, $${offset + 27}, $${offset + 28}, $${offset + 29}, $${offset + 30}, $${offset + 31}, $${offset + 32}, $${offset + 33})`);
+      values.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8}, $${offset + 9}, $${offset + 10}, $${offset + 11}, $${offset + 12}, $${offset + 13}, $${offset + 14}, $${offset + 15}, $${offset + 16}, $${offset + 17}, $${offset + 18}, $${offset + 19}, $${offset + 20}, $${offset + 21}, $${offset + 22}, $${offset + 23}, $${offset + 24}, $${offset + 25}, $${offset + 26}, $${offset + 27}, $${offset + 28})`);
 
       params.push(
         displayName,
-        fullName,
-        firstName,
-        lastName,
-        displayName,
-        JSON.stringify(alternateNames),
         countryBucket,
         player.role ?? null,
         player.batting_style ?? null,
@@ -244,11 +225,6 @@ async function insertTempPlayers(client, players) {
       `
       INSERT INTO temp_players (
         name,
-        full_name,
-        first_name,
-        last_name,
-        display_name,
-        alternate_names,
         country,
         role,
         batting_style,
@@ -402,43 +378,30 @@ async function main() {
       `
       INSERT INTO players (
         name,
-        full_name,
-        first_name,
-        last_name,
-        display_name,
-        alternate_names,
         country,
         role,
         current_team_id,
         is_active,
         is_overseas,
         canonical_key,
-        last_updated_at
+        last_updated_at,
+        seasons_played
       )
       SELECT
-        tp.display_name,
-        tp.full_name,
-        tp.first_name,
-        tp.last_name,
-        tp.display_name,
-        COALESCE(tp.alternate_names, '[]'::jsonb),
+        tp.name,
         NULLIF(btrim(tp.country), ''),
         tp.role,
         t.id,
         tp.is_active,
         tp.is_overseas,
         tp.canonical_key,
-        NOW()
+        NOW(),
+        0
       FROM temp_players tp
       LEFT JOIN teams t ON t.short_code = tp.current_team_short_code
       ON CONFLICT (canonical_key)
       DO UPDATE SET
         name = EXCLUDED.name,
-        full_name = EXCLUDED.full_name,
-        first_name = EXCLUDED.first_name,
-        last_name = EXCLUDED.last_name,
-        display_name = EXCLUDED.display_name,
-        alternate_names = EXCLUDED.alternate_names,
         country = EXCLUDED.country,
         role = EXCLUDED.role,
         current_team_id = EXCLUDED.current_team_id,
@@ -665,6 +628,20 @@ async function main() {
         wickets = EXCLUDED.wickets,
         strike_rate = EXCLUDED.strike_rate,
         economy = EXCLUDED.economy
+      `,
+    );
+
+    await client.query(
+      `
+      UPDATE players p
+      SET seasons_played = COALESCE(
+        (
+          SELECT COUNT(*)::int
+          FROM player_season_stats ps
+          WHERE ps.player_id = p.id
+        ),
+        0
+      )
       `,
     );
 
