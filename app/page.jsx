@@ -355,10 +355,10 @@ async function getRoleSnapshot(searchParams = {}, selectedSeason = parseSeasonPa
         SELECT
           *,
           CASE
-            WHEN normalized_role = 'Batter' THEN COALESCE(season_runs, 0) + COALESCE(season_strike_rate, 0) * 2
-            WHEN normalized_role = 'Bowler' THEN COALESCE(season_wickets, 0) * 24 - COALESCE(season_economy, 0) * 9
-            WHEN normalized_role = 'All-Rounder' THEN COALESCE(season_runs, 0) * 0.55 + COALESCE(season_wickets, 0) * 22 + COALESCE(season_strike_rate, 0) * 0.7
-            WHEN normalized_role = 'Wicketkeeper' THEN COALESCE(season_runs, 0) * 0.75 + COALESCE(season_strike_rate, 0) * 1.4
+            WHEN normalized_role = 'Batter' THEN COALESCE(season_runs, 0)
+            WHEN normalized_role = 'Bowler' THEN COALESCE(season_wickets, 0)
+            WHEN normalized_role = 'All-Rounder' THEN COALESCE(season_runs, 0) * 0.5 + COALESCE(season_wickets, 0) * 20
+            WHEN normalized_role = 'Wicketkeeper' THEN COALESCE(season_runs, 0)
             ELSE COALESCE(season_runs, 0) + COALESCE(season_wickets, 0) * 12
           END AS score
         FROM pool
@@ -369,7 +369,14 @@ async function getRoleSnapshot(searchParams = {}, selectedSeason = parseSeasonPa
           COUNT(*) OVER (PARTITION BY normalized_role)::int AS role_count,
           ROW_NUMBER() OVER (
             PARTITION BY normalized_role
-            ORDER BY score DESC, season_runs DESC, season_wickets DESC, name ASC, id ASC
+            ORDER BY
+              score DESC,
+              season_runs DESC,
+              season_wickets DESC,
+              season_strike_rate DESC,
+              CASE WHEN season_economy > 0 THEN season_economy ELSE NULL END ASC,
+              name ASC,
+              id ASC
           ) AS role_rank
         FROM scored
       )
