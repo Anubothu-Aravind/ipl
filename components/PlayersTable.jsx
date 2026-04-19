@@ -183,16 +183,68 @@ function formatBestBowling(bestBowling) {
   return bestBowling;
 }
 
-export default function PlayersTable({ players, pagination }) {
+export default function PlayersTable({ players, pagination, seasonOptions = [], selectedSeason = null }) {
   const roleSummary = getRoleSummary(players);
+  const clearSeasonHref = pagination.searchQuery
+    ? `?q=${encodeURIComponent(pagination.searchQuery)}`
+    : "/";
 
   return (
     <section className="space-y-6 rounded-3xl border border-slate-700/70 bg-slate-950/70 p-4 shadow-panel md:p-6">
+      <div className="rounded-2xl border border-slate-700/70 bg-slate-900/45 p-4 md:p-5">
+        <form method="GET" className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.2em] text-slate-400">Season Filter</p>
+            <p className="mt-1 text-sm font-semibold text-slate-100">
+              {selectedSeason ? `Showing players from season ${selectedSeason}` : "Showing players across all seasons"}
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            {pagination.searchQuery ? <input type="hidden" name="q" value={pagination.searchQuery} /> : null}
+            <label htmlFor="season" className="text-xs font-semibold uppercase tracking-[0.15em] text-slate-300">
+              Season
+            </label>
+            <select
+              id="season"
+              name="season"
+              defaultValue={selectedSeason ? String(selectedSeason) : ""}
+              className="rounded-full border border-slate-600 bg-slate-900 px-3 py-2 text-xs font-semibold text-slate-100 outline-none ring-sky-400/40 transition focus:ring-2"
+            >
+              <option value="">All</option>
+              {seasonOptions.map((season) => (
+                <option key={season} value={season}>
+                  {season}
+                </option>
+              ))}
+            </select>
+
+            <button
+              type="submit"
+              className="inline-flex items-center rounded-full border border-sky-400/60 bg-sky-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.15em] text-sky-100 transition hover:border-sky-300 hover:bg-sky-400/20"
+            >
+              Apply
+            </button>
+
+            {selectedSeason ? (
+              <Link
+                href={clearSeasonHref}
+                className="inline-flex items-center rounded-full border border-slate-600 px-4 py-2 text-xs font-semibold uppercase tracking-[0.15em] text-slate-200 transition hover:border-slate-400 hover:text-white"
+              >
+                Clear
+              </Link>
+            ) : null}
+          </div>
+        </form>
+      </div>
+
       <div className="rounded-2xl border border-slate-700/70 bg-slate-900/60 p-4 md:p-5">
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
             <p className="text-xs uppercase tracking-[0.22em] text-slate-400">Role Snapshot</p>
-            <h2 className="mt-1 text-2xl font-bold text-white">Player Performance Snapshot</h2>
+            <h2 className="mt-1 text-2xl font-bold text-white">
+              Player Performance Snapshot {selectedSeason ? `(up to ${selectedSeason})` : ""}
+            </h2>
           </div>
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {Object.entries(roleSummary.grouped).map(([role, count]) => (
@@ -306,8 +358,20 @@ export default function PlayersTable({ players, pagination }) {
                     <td className="px-4 py-3">
                       <p className="text-slate-100">{battingLine}</p>
                       <p className="mt-1 text-xs text-slate-400">50s / 100s: {milestoneLine}</p>
+                      {selectedSeason ? (
+                        <p className="mt-1 text-xs text-violet-300">
+                          Season {selectedSeason}: {formatNumber(player.season_runs, 0)} runs in {formatNumber(player.season_matches, 0)} matches
+                        </p>
+                      ) : null}
                     </td>
-                    <td className="px-4 py-3 text-slate-300">{bowlingLine}</td>
+                    <td className="px-4 py-3">
+                      <p className="text-slate-300">{bowlingLine}</p>
+                      {selectedSeason ? (
+                        <p className="mt-1 text-xs text-violet-300">
+                          Season {selectedSeason}: {formatNumber(player.season_wickets, 0)} wkts | SR {formatNumber(player.season_strike_rate, 2)} | Econ {formatNumber(player.season_economy, 2)}
+                        </p>
+                      ) : null}
+                    </td>
                     <td className="px-4 py-3">
                       <span className="inline-flex items-center rounded-full border border-sky-400/35 bg-sky-500/10 px-3 py-1 text-xs font-semibold text-sky-200">
                         {formatNumber(player.balance_metric, 2)}

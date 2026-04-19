@@ -4,6 +4,23 @@ import { query } from "../src/config/db";
 export const dynamic = "force-dynamic";
 
 const PAGE_SIZE = 25;
+const FIRST_IPL_SEASON = 2008;
+
+function parseSeasonParam(searchParams = {}) {
+  const rawValue = getSearchParamValue(searchParams, "season");
+  if (typeof rawValue !== "string" || !rawValue.trim()) {
+    return null;
+  }
+
+  const parsed = Number(rawValue);
+  const maxSeason = new Date().getFullYear() + 1;
+
+  if (!Number.isInteger(parsed) || parsed < FIRST_IPL_SEASON || parsed > maxSeason) {
+    return null;
+  }
+
+  return parsed;
+}
 
 function encodeCursor(player) {
   return Buffer.from(JSON.stringify({ name: player.name, id: player.id })).toString("base64url");
@@ -38,12 +55,29 @@ function getSearchParamValue(searchParams, key) {
   return value;
 }
 
+async function getSeasonOptions() {
+  const result = await query(
+    `
+    SELECT DISTINCT season
+    FROM player_season_stats
+    WHERE season >= $1
+    ORDER BY season DESC
+    `,
+    [FIRST_IPL_SEASON],
+  );
+
+  return result.rows
+    .map((row) => Number(row.season))
+    .filter((season) => Number.isInteger(season));
+}
+
 async function getPlayers(searchParams = {}) {
   const nameExpr = "p.name";
   const fullNameExpr = "p.name";
   const firstNameExpr = "NULL::text";
   const lastNameExpr = "NULL::text";
   const alternateNamesExpr = "'[]'::jsonb";
+  const selectedSeason = parseSeasonParam(searchParams);
   const cursor = decodeCursor(getSearchParamValue(searchParams, "cursor"));
   const direction = getSearchParamValue(searchParams, "direction") === "backward" ? "backward" : "forward";
   const rawQuery = getSearchParamValue(searchParams, "q");
@@ -52,6 +86,13 @@ async function getPlayers(searchParams = {}) {
   const effectiveDirection = hasCursor && direction === "backward" ? "backward" : "forward";
   const params = [];
   const whereClauses = [];
+  let seasonParam = null;
+
+  if (selectedSeason !== null) {
+    params.push(selectedSeason);
+    seasonParam = params.length;
+  }
+
   const orderClause = effectiveDirection === "backward"
     ? `ORDER BY ${nameExpr} DESC, p.id DESC`
     : `ORDER BY ${nameExpr} ASC, p.id ASC`;
@@ -75,6 +116,44 @@ async function getPlayers(searchParams = {}) {
 
   const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
+  const statsJoinClause = selectedSeason !== null
+    ? `
+      JOIN player_season_stats ps_selected
+        ON ps_selected.player_id = p.id
+       AND ps_selected.season = $${seasonParam}
+      LEFT JOIN LATERAL (
+        SELECT
+          COALESCE(SUM(ps.matches), 0)::int AS matches,
+          COALESCE(SUM(ps.runs), 0)::int AS runs,
+          COALESCE(SUM(ps.wickets), 0)::int AS wickets,
+          CASE
+            WHEN SUM(CASE WHEN ps.strike_rate > 0 THEN ps.matches ELSE 0 END) > 0
+              THEN ROUND(
+                SUM(CASE WHEN ps.strike_rate > 0 THEN ps.matches * ps.strike_rate ELSE 0 END)::numeric /
+                SUM(CASE WHEN ps.strike_rate > 0 THEN ps.matches ELSE 0 END),
+                2
+              )
+            ELSE 0
+          END AS strike_rate,
+          CASE
+            WHEN SUM(CASE WHEN ps.economy > 0 THEN ps.matches ELSE 0 END) > 0
+              THEN ROUND(
+                SUM(CASE WHEN ps.economy > 0 THEN ps.matches * ps.economy ELSE 0 END)::numeric /
+                SUM(CASE WHEN ps.economy > 0 THEN ps.matches ELSE 0 END),
+                2
+              )
+            ELSE 0
+          END AS economy
+        FROM player_season_stats ps
+        WHERE ps.player_id = p.id
+          AND ps.season <= $${seasonParam}
+      ) s ON TRUE
+    `
+    : `
+      LEFT JOIN player_stats s ON s.player_id = p.id
+      LEFT JOIN player_season_stats ps_selected ON FALSE
+    `;
+
   params.push(PAGE_SIZE + 1);
 
   const sql = `
@@ -95,26 +174,41 @@ async function getPlayers(searchParams = {}) {
       p.role,
       p.is_active,
       t.short_code AS current_team,
-      s.matches,
-      s.innings,
-      s.runs,
-      s.highest_score,
-      s.average,
-      s.wickets,
-      s.strike_rate,
-      s.hundreds,
-      s.fifties,
-      s.economy,
-      s.bowling_innings,
-      s.bowling_average,
-      s.four_w_hauls,
-      s.five_w_hauls,
-      s.dot_balls,
-      s.balance_metric,
-      s.best_bowling
+      COALESCE(s.matches, 0)::int AS matches,
+      ${selectedSeason !== null ? "COALESCE(s.matches, 0)::int" : "COALESCE(s.innings, 0)::int"} AS innings,
+      COALESCE(s.runs, 0)::int AS runs,
+      ${selectedSeason !== null ? "0::int" : "COALESCE(s.highest_score, 0)::int"} AS highest_score,
+      ${selectedSeason !== null ? "0::numeric" : "COALESCE(s.average, 0)::numeric"} AS average,
+      COALESCE(s.wickets, 0)::int AS wickets,
+      COALESCE(s.strike_rate, 0)::numeric AS strike_rate,
+      ${selectedSeason !== null ? "0::int" : "COALESCE(s.hundreds, 0)::int"} AS hundreds,
+      ${selectedSeason !== null ? "0::int" : "COALESCE(s.fifties, 0)::int"} AS fifties,
+      COALESCE(s.economy, 0)::numeric AS economy,
+      ${selectedSeason !== null ? "COALESCE(s.matches, 0)::int" : "COALESCE(s.bowling_innings, 0)::int"} AS bowling_innings,
+      ${selectedSeason !== null ? "0::numeric" : "COALESCE(s.bowling_average, 0)::numeric"} AS bowling_average,
+      ${selectedSeason !== null ? "0::int" : "COALESCE(s.four_w_hauls, 0)::int"} AS four_w_hauls,
+      ${selectedSeason !== null ? "0::int" : "COALESCE(s.five_w_hauls, 0)::int"} AS five_w_hauls,
+      ${selectedSeason !== null ? "0::int" : "COALESCE(s.dot_balls, 0)::int"} AS dot_balls,
+      ${selectedSeason !== null
+    ? "ROUND((COALESCE(s.runs, 0) * 0.03 + COALESCE(s.wickets, 0) * 2 + COALESCE(s.strike_rate, 0) * 0.05 - COALESCE(s.economy, 0) * 0.2)::numeric, 2)"
+    : "COALESCE(s.balance_metric, 0)::numeric"} AS balance_metric,
+      ${selectedSeason !== null ? "NULL::text" : "s.best_bowling"} AS best_bowling
+      ${selectedSeason !== null
+    ? `,
+      COALESCE(ps_selected.matches, 0)::int AS season_matches,
+      COALESCE(ps_selected.runs, 0)::int AS season_runs,
+      COALESCE(ps_selected.wickets, 0)::int AS season_wickets,
+      COALESCE(ps_selected.strike_rate, 0)::numeric AS season_strike_rate,
+      COALESCE(ps_selected.economy, 0)::numeric AS season_economy`
+    : `,
+      NULL::int AS season_matches,
+      NULL::int AS season_runs,
+      NULL::int AS season_wickets,
+      NULL::numeric AS season_strike_rate,
+      NULL::numeric AS season_economy`}
     FROM players p
     LEFT JOIN teams t ON t.id = p.current_team_id
-    LEFT JOIN player_stats s ON s.player_id = p.id
+    ${statsJoinClause}
     ${whereClause}
     ${orderClause}
     LIMIT $${params.length}
@@ -135,6 +229,7 @@ async function getPlayers(searchParams = {}) {
       direction: effectiveDirection,
       pageSize: PAGE_SIZE,
       searchQuery,
+      selectedSeason,
     },
   };
 }
@@ -142,25 +237,42 @@ async function getPlayers(searchParams = {}) {
 async function getPlayerCount(searchParams = {}) {
   const rawQuery = getSearchParamValue(searchParams, "q");
   const searchQuery = typeof rawQuery === "string" ? rawQuery.trim() : "";
+  const selectedSeason = parseSeasonParam(searchParams);
+  const params = [];
+  const whereClauses = [];
+  let seasonJoin = "";
 
-  if (!searchQuery) {
+  if (selectedSeason !== null) {
+    params.push(selectedSeason);
+    seasonJoin = `JOIN player_season_stats ps ON ps.player_id = p.id AND ps.season = $${params.length}`;
+  }
+
+  if (!searchQuery && selectedSeason === null) {
     const result = await query("SELECT COUNT(*)::int AS total FROM players");
     return result.rows[0]?.total ?? 0;
   }
+
+  if (searchQuery) {
+    params.push(`%${searchQuery}%`);
+    whereClauses.push(`p.name ILIKE $${params.length}`);
+  }
+
+  const whereClause = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
   const result = await query(
     `
     SELECT COUNT(*)::int AS total
     FROM players p
-    WHERE p.name ILIKE $1
+    ${seasonJoin}
+    ${whereClause}
     `,
-    [`%${searchQuery}%`],
+    params,
   );
 
   return result.rows[0]?.total ?? 0;
 }
 
-function buildPageHref(cursor, direction, searchQuery) {
+function buildPageHref(cursor, direction, searchQuery, selectedSeason) {
   if (!cursor) {
     return null;
   }
@@ -171,14 +283,19 @@ function buildPageHref(cursor, direction, searchQuery) {
   if (searchQuery) {
     params.set("q", searchQuery);
   }
+  if (selectedSeason) {
+    params.set("season", String(selectedSeason));
+  }
   return `?${params.toString()}`;
 }
 
 export default async function HomePage({ searchParams }) {
   const resolvedSearchParams = await Promise.resolve(searchParams ?? {});
-  const [{ players, pagination }, totalPlayers] = await Promise.all([
+  const selectedSeason = parseSeasonParam(resolvedSearchParams);
+  const [{ players, pagination }, totalPlayers, seasonOptions] = await Promise.all([
     getPlayers(resolvedSearchParams),
     getPlayerCount(resolvedSearchParams),
+    getSeasonOptions(),
   ]);
 
   const countryCount = new Set(
@@ -192,10 +309,10 @@ export default async function HomePage({ searchParams }) {
     totalPlayers,
     totalCountries: countryCount,
     previousHref: pagination.hasPreviousPage
-      ? buildPageHref(pagination.previousCursor, "backward", pagination.searchQuery)
+      ? buildPageHref(pagination.previousCursor, "backward", pagination.searchQuery, selectedSeason)
       : null,
     nextHref: pagination.hasNextPage
-      ? buildPageHref(pagination.nextCursor, "forward", pagination.searchQuery)
+      ? buildPageHref(pagination.nextCursor, "forward", pagination.searchQuery, selectedSeason)
       : null,
   };
 
@@ -219,10 +336,18 @@ export default async function HomePage({ searchParams }) {
           <div className="inline-flex items-center rounded-full border border-slate-600 bg-slate-800/80 px-4 py-1 text-slate-200">
             {totalPlayers} total players
           </div>
+          <div className="inline-flex items-center rounded-full border border-violet-400/40 bg-violet-500/10 px-4 py-1 text-violet-200">
+            Season: {selectedSeason ?? "All"}
+          </div>
         </div>
       </section>
 
-      <PlayersTable players={players} pagination={paginationProps} />
+      <PlayersTable
+        players={players}
+        pagination={paginationProps}
+        seasonOptions={seasonOptions}
+        selectedSeason={selectedSeason}
+      />
     </main>
   );
 }
