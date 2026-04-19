@@ -15,6 +15,11 @@ const TEAM_ROWS = [
   ["Punjab Kings", "PBKS"],
   ["Lucknow Super Giants", "LSG"],
   ["Gujarat Titans", "GT"],
+  ["Deccan Chargers", "DCG"],
+  ["Pune Warriors", "PWI"],
+  ["Rising Pune Supergiant", "RPS"],
+  ["Kochi Tuskers Kerala", "KTK"],
+  ["Gujarat Lions", "GL"],
 ];
 
 function normalizeName(name) {
@@ -301,6 +306,9 @@ async function main() {
       `,
     );
 
+    await client.query("DELETE FROM player_season_stats");
+    await client.query("DELETE FROM player_team_history");
+
     await client.query(
       `
       DELETE FROM players p
@@ -328,7 +336,8 @@ async function main() {
         current_team_id,
         is_active,
         is_overseas,
-        canonical_key
+        canonical_key,
+        last_updated_at
       )
       SELECT
         tp.display_name,
@@ -342,7 +351,8 @@ async function main() {
         t.id,
         tp.is_active,
         tp.is_overseas,
-        tp.canonical_key
+        tp.canonical_key,
+        NOW()
       FROM temp_players tp
       LEFT JOIN teams t ON t.short_code = tp.current_team_short_code
       ON CONFLICT (canonical_key)
@@ -357,7 +367,8 @@ async function main() {
         role = EXCLUDED.role,
         current_team_id = EXCLUDED.current_team_id,
         is_active = EXCLUDED.is_active,
-        is_overseas = EXCLUDED.is_overseas
+        is_overseas = EXCLUDED.is_overseas,
+        last_updated_at = NOW()
       `,
     );
 
@@ -432,6 +443,152 @@ async function main() {
         balance_metric = EXCLUDED.balance_metric,
         best_bowling = EXCLUDED.best_bowling,
         last_updated_at = NOW()
+      `,
+    );
+
+    const historyRows = JSON.parse(await readFile("db/raw/player_team_history.json", "utf8"));
+    await client.query(`
+      CREATE TEMP TABLE temp_player_team_history (
+        canonical_key TEXT,
+        team_short_code TEXT,
+        from_year INT,
+        to_year INT
+      ) ON COMMIT DROP
+    `);
+
+    const historyColumnsPerRow = 4;
+    for (const chunk of chunkArray(historyRows.filter((row) => row.from_year && row.from_year >= 2008), 500)) {
+      const values = [];
+      const params = [];
+
+      chunk.forEach((row, index) => {
+        const offset = index * historyColumnsPerRow;
+        values.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4})`);
+        params.push(
+          row.canonical_key,
+          row.team_short_code,
+          row.from_year,
+          row.to_year ?? row.from_year,
+        );
+      });
+
+      await client.query(
+        `
+        INSERT INTO temp_player_team_history (
+          canonical_key,
+          team_short_code,
+          from_year,
+          to_year
+        )
+        VALUES ${values.join(",")}
+        `,
+        params,
+      );
+    }
+
+    await client.query(
+      `
+      INSERT INTO player_team_history (
+        player_id,
+        team_id,
+        from_year,
+        to_year
+      )
+      SELECT
+        p.id,
+        t.id,
+        h.from_year,
+        h.to_year
+      FROM temp_player_team_history h
+      JOIN players p ON p.canonical_key = h.canonical_key
+      JOIN teams t ON t.short_code = h.team_short_code
+      `,
+    );
+
+    const seasonRows = JSON.parse(await readFile("db/raw/player_season_stats.json", "utf8"));
+    await client.query(`
+      CREATE TEMP TABLE temp_season_stats (
+        canonical_key TEXT,
+        season INT,
+        team_short_code TEXT,
+        matches INT,
+        runs INT,
+        wickets INT,
+        strike_rate NUMERIC,
+        economy NUMERIC
+      ) ON COMMIT DROP
+    `);
+
+    const seasonColumnsPerRow = 8;
+    for (const chunk of chunkArray(seasonRows.filter((row) => row.season && row.season >= 2008), 500)) {
+      const values = [];
+      const params = [];
+
+      chunk.forEach((row, index) => {
+        const offset = index * seasonColumnsPerRow;
+        values.push(`($${offset + 1}, $${offset + 2}, $${offset + 3}, $${offset + 4}, $${offset + 5}, $${offset + 6}, $${offset + 7}, $${offset + 8})`);
+        params.push(
+          row.canonical_key,
+          row.season,
+          row.team_short_code,
+          row.matches ?? 0,
+          row.runs ?? 0,
+          row.wickets ?? 0,
+          row.strike_rate ?? 0,
+          row.economy ?? 0,
+        );
+      });
+
+      await client.query(
+        `
+        INSERT INTO temp_season_stats (
+          canonical_key,
+          season,
+          team_short_code,
+          matches,
+          runs,
+          wickets,
+          strike_rate,
+          economy
+        )
+        VALUES ${values.join(",")}
+        `,
+        params,
+      );
+    }
+
+    await client.query(
+      `
+      INSERT INTO player_season_stats (
+        player_id,
+        season,
+        team_id,
+        matches,
+        runs,
+        wickets,
+        strike_rate,
+        economy
+      )
+      SELECT
+        p.id,
+        s.season,
+        t.id,
+        s.matches,
+        s.runs,
+        s.wickets,
+        s.strike_rate,
+        s.economy
+      FROM temp_season_stats s
+      JOIN players p ON p.canonical_key = s.canonical_key
+      LEFT JOIN teams t ON t.short_code = s.team_short_code
+      ON CONFLICT (player_id, season)
+      DO UPDATE SET
+        team_id = EXCLUDED.team_id,
+        matches = EXCLUDED.matches,
+        runs = EXCLUDED.runs,
+        wickets = EXCLUDED.wickets,
+        strike_rate = EXCLUDED.strike_rate,
+        economy = EXCLUDED.economy
       `,
     );
 
