@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { query } from "../config/db";
 
 const WORKER_NAME = "daily_player_stats_refresh";
+const DEFAULT_INTERVAL_HOURS = 24;
 const STALE_RUNNING_HOURS = 6;
 
 function isWorkerEnabled() {
@@ -17,20 +18,26 @@ function isBuildProcess() {
   );
 }
 
+function getIntervalHours() {
+  const parsed = Number(process.env.DAILY_STATS_WORKER_INTERVAL_HOURS ?? DEFAULT_INTERVAL_HOURS);
+  if (!Number.isFinite(parsed) || parsed <= 0) {
+    return DEFAULT_INTERVAL_HOURS;
+  }
+  return parsed;
+}
+
 function log(message) {
   process.stdout.write(`[daily-stats-worker] ${message}\n`);
 }
 
-function getNpmCommand() {
-  return process.platform === "win32" ? "npm.cmd" : "npm";
-}
-
 function runRefreshCommand() {
   return new Promise((resolve, reject) => {
-    const child = spawn(getNpmCommand(), ["run", "data:refresh-stats"], {
+    const refreshCommand = "npm run data:refresh-stats";
+    const child = spawn(refreshCommand, [], {
       cwd: process.cwd(),
       env: process.env,
       stdio: ["ignore", "pipe", "pipe"],
+      shell: true,
     });
 
     child.stdout.on("data", (chunk) => {
@@ -159,5 +166,28 @@ export function startDailyStatsWorker() {
   }
 
   globalThis.__dailyStatsWorkerStarted = true;
+
+  if (isBuildProcess()) {
+    return;
+  }
+
+  if (!isWorkerEnabled()) {
+    log("disabled via DAILY_STATS_WORKER_ENABLED");
+    return;
+  }
+
   void runWorker();
+
+  const intervalHours = getIntervalHours();
+  const intervalMs = Math.round(intervalHours * 60 * 60 * 1000);
+  const intervalHandle = setInterval(() => {
+    void runWorker();
+  }, intervalMs);
+
+  if (typeof intervalHandle.unref === "function") {
+    intervalHandle.unref();
+  }
+
+  globalThis.__dailyStatsWorkerInterval = intervalHandle;
+  log(`scheduled recurring refresh every ${intervalHours} hours`);
 }
