@@ -76,6 +76,11 @@ function normalizeOptionalText(value) {
   return trimmed;
 }
 
+function normalizeTeamShortCode(value) {
+  const normalized = normalizeOptionalText(value);
+  return normalized ? normalized.toUpperCase() : null;
+}
+
 function splitNameParts(fullName) {
   const tokens = fullName.split(" ").filter(Boolean);
   if (tokens.length < 2) {
@@ -150,7 +155,9 @@ async function main() {
         ),
         country: normalizeOptionalText(player.country),
         role: normalizeOptionalText(player.role),
-        current_team_short_code: normalizeOptionalText(player.current_team_short_code),
+        batting_style: normalizeOptionalText(player.batting_style),
+        bowling_style: normalizeOptionalText(player.bowling_style),
+        current_team_short_code: normalizeTeamShortCode(player.current_team_short_code),
         canonical_key: canonicalKey(canonicalSource),
       };
     })
