@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { query } from "../config/db";
 
 const WORKER_NAME = "daily_player_stats_refresh";
-const RUN_EVERY_HOURS = 24;
 const STALE_RUNNING_HOURS = 6;
 
 function isWorkerEnabled() {
@@ -79,13 +78,13 @@ async function claimRunSlot() {
       updated_at = NOW()
     WHERE worker_name = $1
       AND (
-        last_started_at IS NULL
+        last_status <> 'running'
+        OR last_started_at IS NULL
         OR last_started_at < NOW() - ($2::text || ' hours')::interval
-        OR (last_status = 'running' AND last_started_at < NOW() - ($3::text || ' hours')::interval)
       )
     RETURNING last_started_at
     `,
-    [WORKER_NAME, String(RUN_EVERY_HOURS), String(STALE_RUNNING_HOURS)],
+    [WORKER_NAME, String(STALE_RUNNING_HOURS)],
   );
 
   return result.rowCount > 0;
@@ -120,7 +119,7 @@ async function runWorker() {
   try {
     const claimed = await claimRunSlot();
     if (!claimed) {
-      log("skipped: last run is still fresh (<24h) or already running");
+      log("skipped: another worker run is already in progress");
       return;
     }
   } catch (error) {
