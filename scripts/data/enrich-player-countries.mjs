@@ -5,6 +5,7 @@ import { join } from "node:path";
 const PEOPLE_REGISTER_URL = "https://cricsheet.org/register/people.csv";
 const PEOPLE_REGISTER_PATH = "db/raw/people_register.csv";
 const COUNTRY_CACHE_PATH = "db/raw/player_country_cache.json";
+const PROFILE_CACHE_PATH = "db/raw/player_profile_cache.json";
 const ESPN_ATHLETE_URL = "https://site.web.api.espn.com/apis/common/v3/sports/cricket/athletes";
 
 const PLACEHOLDER_COUNTRIES = new Set([
@@ -354,6 +355,28 @@ async function saveCountryCache(cache) {
   await writeFile(COUNTRY_CACHE_PATH, JSON.stringify(cache, null, 2));
 }
 
+async function loadProfileCache() {
+  if (!existsSync(PROFILE_CACHE_PATH)) {
+    return {};
+  }
+
+  try {
+    const raw = await readFile(PROFILE_CACHE_PATH, "utf8");
+    const parsed = JSON.parse(raw);
+    if (!parsed || typeof parsed !== "object") {
+      return {};
+    }
+
+    return parsed;
+  } catch {
+    return {};
+  }
+}
+
+async function saveProfileCache(cache) {
+  await writeFile(PROFILE_CACHE_PATH, JSON.stringify(cache, null, 2));
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -394,6 +417,38 @@ function extractCountryFromEspnPayload(payload) {
   return null;
 }
 
+function extractNameProfileFromEspnPayload(payload) {
+  const athlete = payload?.athlete;
+  if (!athlete || typeof athlete !== "object") {
+    return null;
+  }
+
+  const displayName = normalizeOptionalName(athlete.displayName);
+  const fullName = normalizeOptionalName(athlete.fullName) ?? displayName;
+  const shortName = normalizeOptionalName(athlete.shortName);
+  const firstName = normalizeOptionalName(athlete.firstName);
+  const lastName = normalizeOptionalName(athlete.lastName);
+
+  if (!displayName && !fullName && !shortName && !firstName && !lastName) {
+    return null;
+  }
+
+  return {
+    displayName,
+    fullName,
+    shortName,
+    firstName,
+    lastName,
+  };
+}
+
+function extractProfileFromEspnPayload(payload) {
+  return {
+    country: extractCountryFromEspnPayload(payload),
+    nameProfile: extractNameProfileFromEspnPayload(payload),
+  };
+}
+
 async function fetchCountryFromEspnId(cricinfoId) {
   const url = `${ESPN_ATHLETE_URL}/${cricinfoId}`;
 
@@ -416,6 +471,40 @@ async function fetchCountryFromEspnId(cricinfoId) {
 
       const payload = await response.json();
       return extractCountryFromEspnPayload(payload);
+    } catch {
+      if (attempt < 3) {
+        await sleep(300 * attempt);
+        continue;
+      }
+      return null;
+    }
+  }
+
+  return null;
+}
+
+async function fetchProfileFromEspnId(cricinfoId) {
+  const url = `${ESPN_ATHLETE_URL}/${cricinfoId}`;
+
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetch(url, {
+        headers: {
+          "user-agent": "Mozilla/5.0",
+          accept: "application/json",
+        },
+      });
+
+      if (!response.ok) {
+        if (response.status >= 500 && attempt < 3) {
+          await sleep(300 * attempt);
+          continue;
+        }
+        return null;
+      }
+
+      const payload = await response.json();
+      return extractProfileFromEspnPayload(payload);
     } catch {
       if (attempt < 3) {
         await sleep(300 * attempt);
@@ -502,6 +591,7 @@ async function main() {
   const peopleRegister = await ensurePeopleRegister();
   const { identifierToCricinfo, identifierToCricbuzz, identifierToNames } = buildIdentifierSourceMap(peopleRegister);
   const countryCache = await loadCountryCache();
+  const profileCache = await loadProfileCache();
 
   const playerContext = players.map((player) => {
     const normalizedName = normalizeName(player.name);
@@ -529,13 +619,21 @@ async function main() {
       (value) =>
         typeof value === "string" &&
         value &&
-        !(cacheKey("cricinfo", value) in countryCache),
+        (
+          !(cacheKey("cricinfo", value) in countryCache) ||
+          !(cacheKey("cricinfo", value) in profileCache) ||
+          profileCache[cacheKey("cricinfo", value)] == null
+        ),
     ))];
 
   let fetchedCricinfo = 0;
   await runPool(cricinfoIdsToFetch, 8, async (cricinfoId) => {
-    const country = await fetchCountryFromEspnId(cricinfoId);
+    const profile = await fetchProfileFromEspnId(cricinfoId);
+    const country = profile?.country ?? null;
+    const nameProfile = profile?.nameProfile ?? null;
+
     countryCache[cacheKey("cricinfo", cricinfoId)] = country;
+    profileCache[cacheKey("cricinfo", cricinfoId)] = nameProfile;
     fetchedCricinfo += 1;
 
     if (fetchedCricinfo % 50 === 0 || fetchedCricinfo === cricinfoIdsToFetch.length) {
@@ -577,22 +675,32 @@ async function main() {
 
   const updatedPlayers = players.map((player, index) => {
     const context = playerContext[index];
+    const espnNameProfile = context.cricinfoId
+      ? profileCache[cacheKey("cricinfo", context.cricinfoId)] ?? null
+      : null;
     const existingName = normalizeName(player.name);
     const fullName = pickBestFullName({
       existingName,
       existingFullName: player.full_name,
-      registerName: context.registerNames?.name,
-      registerUniqueName: context.registerNames?.uniqueName,
+      registerName: espnNameProfile?.fullName ?? espnNameProfile?.displayName ?? context.registerNames?.name,
+      registerUniqueName: espnNameProfile?.shortName ?? context.registerNames?.uniqueName,
     });
     const displayName = fullName;
     const splitName = splitNameParts(fullName);
-    const firstName = normalizeOptionalName(player.first_name) ?? splitName.first_name;
-    const lastName = normalizeOptionalName(player.last_name) ?? splitName.last_name;
+    const firstName = normalizeOptionalName(espnNameProfile?.firstName)
+      ?? normalizeOptionalName(player.first_name)
+      ?? splitName.first_name;
+    const lastName = normalizeOptionalName(espnNameProfile?.lastName)
+      ?? normalizeOptionalName(player.last_name)
+      ?? splitName.last_name;
     const alternateNames = normalizeAlternateNames(
       player.alternate_names,
       [
         existingName,
         player.display_name,
+        espnNameProfile?.displayName,
+        espnNameProfile?.fullName,
+        espnNameProfile?.shortName,
         context.registerNames?.name,
         context.registerNames?.uniqueName,
         player.full_name,
@@ -654,6 +762,7 @@ async function main() {
 
   await writeFile(outputPath, JSON.stringify(updatedPlayers, null, 2));
   await saveCountryCache(countryCache);
+  await saveProfileCache(profileCache);
 
   process.stdout.write(`Enriched players written to ${outputPath}\n`);
   process.stdout.write(`Cricinfo-enriched countries: ${enrichedFromCricinfo}\n`);
