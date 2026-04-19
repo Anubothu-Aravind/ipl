@@ -1,9 +1,9 @@
 import { spawn } from "node:child_process";
-import { query } from "../config/db";
+import { pool, query } from "../config/db";
 
 const WORKER_NAME = "daily_player_stats_refresh";
 const DEFAULT_INTERVAL_HOURS = 24;
-const STALE_RUNNING_HOURS = 6;
+const ADVISORY_LOCK_KEY = 72420031;
 
 function isWorkerEnabled() {
   const raw = String(process.env.DAILY_STATS_WORKER_ENABLED ?? "true").trim().toLowerCase();
@@ -65,7 +65,39 @@ function runRefreshCommand() {
   });
 }
 
-async function claimRunSlot() {
+async function acquireWorkerLock() {
+  const client = await pool.connect();
+
+  try {
+    const result = await client.query(
+      "SELECT pg_try_advisory_lock($1)::boolean AS locked",
+      [ADVISORY_LOCK_KEY],
+    );
+
+    if (!result.rows[0]?.locked) {
+      client.release();
+      return null;
+    }
+
+    return client;
+  } catch (error) {
+    client.release();
+    throw error;
+  }
+}
+
+async function releaseWorkerLock(client) {
+  try {
+    await client.query("SELECT pg_advisory_unlock($1)", [ADVISORY_LOCK_KEY]);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    log(`warning: failed to release advisory lock: ${message}`);
+  } finally {
+    client.release();
+  }
+}
+
+async function markRunStarted() {
   await query(
     `
     INSERT INTO background_worker_runs (worker_name, last_status)
@@ -84,14 +116,9 @@ async function claimRunSlot() {
       last_error = NULL,
       updated_at = NOW()
     WHERE worker_name = $1
-      AND (
-        last_status <> 'running'
-        OR last_started_at IS NULL
-        OR last_started_at < NOW() - ($2::text || ' hours')::interval
-      )
     RETURNING last_started_at
     `,
-    [WORKER_NAME, String(STALE_RUNNING_HOURS)],
+    [WORKER_NAME],
   );
 
   return result.rowCount > 0;
@@ -113,6 +140,8 @@ async function markRun(status, errorText = null) {
 }
 
 async function runWorker() {
+  let lockClient = null;
+
   if (isBuildProcess()) {
     log("skipped during build process");
     return;
@@ -124,20 +153,21 @@ async function runWorker() {
   }
 
   try {
-    const claimed = await claimRunSlot();
-    if (!claimed) {
-      log("skipped: another worker run is already in progress");
-      return;
-    }
-  } catch (error) {
-    if (error && typeof error === "object" && error.code === "42P01") {
-      log("skipped: background_worker_runs table missing. Run npm run db:migrate first.");
+    lockClient = await acquireWorkerLock();
+    if (!lockClient) {
+      log("skipped: another live worker run is already in progress");
       return;
     }
 
-    const message = error instanceof Error ? error.message : String(error);
-    log(`failed to claim run slot: ${message}`);
-    return;
+    await markRunStarted();
+  } catch (error) {
+    if (error && typeof error === "object" && error.code === "42P01") {
+      log("status table missing. Run npm run db:migrate first. Continuing without status tracking.");
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      log(`failed to start worker run: ${message}`);
+      return;
+    }
   }
 
   log("starting data:refresh-stats pipeline");
@@ -157,6 +187,10 @@ async function runWorker() {
     }
 
     log(`failed: ${message}`);
+  } finally {
+    if (lockClient) {
+      await releaseWorkerLock(lockClient);
+    }
   }
 }
 
