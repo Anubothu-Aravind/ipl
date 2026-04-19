@@ -183,7 +183,7 @@ async function insertTempPlayers(client, players) {
 
     chunk.forEach((player, index) => {
       const fallbackName = normalizeOptionalName(player.name) ?? "Unknown Player";
-      const displayName = normalizeOptionalName(player.display_name) ?? fallbackName;
+      const displayName = normalizeOptionalName(player.full_name) ?? normalizeOptionalName(player.display_name) ?? fallbackName;
       const countryBucket = toCountryBucket(player.country);
       const offset = index * columnsPerRow;
 

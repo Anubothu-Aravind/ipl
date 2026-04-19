@@ -695,9 +695,14 @@ async function main() {
       ? profileCache[cacheKey("cricinfo", context.cricinfoId)] ?? null
       : null;
     const existingName = normalizeName(player.name);
-    const displayName = normalizeOptionalName(player.display_name) ?? existingName;
-    const fullName = normalizeOptionalName(player.full_name) ?? existingName;
-    const splitName = splitNameParts(displayName);
+    const fullName = pickBestFullName({
+      existingName,
+      existingFullName: player.full_name,
+      registerName: espnNameProfile?.fullName ?? espnNameProfile?.displayName ?? context.registerNames?.name,
+      registerUniqueName: espnNameProfile?.shortName ?? context.registerNames?.uniqueName,
+    });
+    const displayName = fullName;
+    const splitName = splitNameParts(fullName);
     const firstName = normalizeOptionalName(espnNameProfile?.firstName)
       ?? normalizeOptionalName(player.first_name)
       ?? splitName.first_name;
@@ -767,7 +772,7 @@ async function main() {
 
     return {
       ...player,
-      name: displayName,
+      name: fullName,
       full_name: fullName,
       first_name: firstName,
       last_name: lastName,
